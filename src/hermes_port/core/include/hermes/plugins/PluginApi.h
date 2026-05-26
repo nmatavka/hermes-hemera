@@ -8,8 +8,10 @@ constexpr std::uint32_t kPluginAbiVersion = 1;
 
 enum PluginCapability : std::uint32_t {
     kPluginCapabilityMenu = 1u << 0,
-    kPluginCapabilityMessageProcessor = 1u << 1,
-    kPluginCapabilitySecurity = 1u << 2,
+    kPluginCapabilityTranslator = 1u << 1,
+    kPluginCapabilitySpecial = 1u << 2,
+    kPluginCapabilitySecurity = 1u << 3,
+    kPluginCapabilityMessageProcessor = kPluginCapabilityTranslator,
 };
 
 struct PluginDescriptor {

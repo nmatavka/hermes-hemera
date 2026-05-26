@@ -1,13 +1,21 @@
 add_library(
     hermes_port_core
+    src/FilesystemMailboxStore.cpp
     src/BufferedMessageRenderer.cpp
+    src/FilesystemMessageStore.cpp
     src/FilesystemPluginHost.cpp
+    src/FlatFileNicknameStore.cpp
+    src/HeuristicJunkScorer.cpp
     src/HunspellSpellService.cpp
     src/InMemoryWorkspaceModel.cpp
     src/IniSettingsStore.cpp
+    src/MemoryAddressBookService.cpp
     src/MemoryRichTextSurface.cpp
     src/OpenSslTlsProvider.cpp
     src/RendererMode.cpp
+    src/RuleBasedFilterEngine.cpp
+    src/SimpleSearchService.cpp
+    src/SocketTransportService.cpp
 )
 
 add_library(hermes::port_core ALIAS hermes_port_core)

@@ -27,24 +27,21 @@ if(EXISTS "${HERMES_PAIGE_ROOT}/PGHEADER/PAIGE.H")
 endif()
 
 set(HERMES_HAS_OPENSSL 0)
-if(EXISTS "${HERMES_OPENSSL_ROOT}/include/openssl/ssl.h")
+find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND)
     set(HERMES_HAS_OPENSSL 1)
+    target_link_libraries(
+        hermes_port_dependencies
+        INTERFACE
+            OpenSSL::SSL
+            OpenSSL::Crypto
+    )
+elseif(EXISTS "${HERMES_OPENSSL_ROOT}/include/openssl/ssl.h")
     target_include_directories(
         hermes_port_dependencies
         INTERFACE
             "${HERMES_OPENSSL_ROOT}/include"
     )
-else()
-    find_package(OpenSSL QUIET)
-    if(OpenSSL_FOUND)
-        set(HERMES_HAS_OPENSSL 1)
-        target_link_libraries(
-            hermes_port_dependencies
-            INTERFACE
-                OpenSSL::SSL
-                OpenSSL::Crypto
-        )
-    endif()
 endif()
 
 set(HERMES_HAS_HUNSPELL 0)
