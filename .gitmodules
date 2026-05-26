@@ -1,0 +1,10 @@
+[submodule "third_party/Hermes-Paige"]
+	path = third_party/Hermes-Paige
+	url = https://github.com/nmatavka/Hermes-Paige
+	branch = main
+[submodule "third_party/openssl"]
+	path = third_party/openssl
+	url = https://github.com/openssl/openssl
+[submodule "third_party/hunspell"]
+	path = third_party/hunspell
+	url = https://github.com/hunspell/hunspell
