@@ -13,6 +13,7 @@ class HaikuMainWindow final : public BWindow {
 public:
     explicit HaikuMainWindow(HaikuShellHost& shell_host);
 
+    void MessageReceived(BMessage* message) override;
     bool QuitRequested() override;
 
 private:

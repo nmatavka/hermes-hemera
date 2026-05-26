@@ -2,7 +2,7 @@
 
 #include <string_view>
 
-#include "hermes/RichTextSurface.h"
+#include "hermes/ComposeMessage.h"
 
 namespace hermes {
 
@@ -12,7 +12,7 @@ public:
 
     virtual int Run() = 0;
     virtual bool OpenMailbox(std::string_view mailbox_id) = 0;
-    virtual bool OpenComposer(const RichTextDocument& document) = 0;
+    virtual bool OpenComposer(const ComposeMessage& message) = 0;
 };
 
 }  // namespace hermes

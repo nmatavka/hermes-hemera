@@ -1,9 +1,13 @@
 add_library(
     hermes_port_core
+    src/ComposeController.cpp
+    src/ComposeMessage.cpp
     src/FilesystemMailboxStore.cpp
+    src/FilesystemDraftStore.cpp
     src/BufferedMessageRenderer.cpp
     src/FilesystemMessageStore.cpp
     src/FilesystemPluginHost.cpp
+    src/FilesystemStationeryStore.cpp
     src/FlatFileNicknameStore.cpp
     src/HeuristicJunkScorer.cpp
     src/HunspellSpellService.cpp

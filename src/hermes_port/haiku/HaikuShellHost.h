@@ -3,6 +3,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "hermes/IniSettingsStore.h"
 #include "hermes/InMemoryWorkspaceModel.h"
@@ -11,6 +12,7 @@
 namespace hermes::haiku_port {
 
 class HaikuMainWindow;
+class HaikuComposeWindow;
 
 class HaikuShellHost final : public ShellHost {
 public:
@@ -18,21 +20,23 @@ public:
 
     int Run() override;
     bool OpenMailbox(std::string_view mailbox_id) override;
-    bool OpenComposer(const RichTextDocument& document) override;
+    bool OpenComposer(const ComposeMessage& message) override;
 
     InMemoryWorkspaceModel& Workspace();
     IniSettingsStore& Settings();
-    const std::optional<RichTextDocument>& PendingComposerDocument() const;
+    const std::optional<ComposeMessage>& PendingComposerMessage() const;
 
     void ShowMainWindow();
 
 private:
+    void ShowComposeWindow(const ComposeMessage& message);
     void SeedWorkspace();
 
     std::unique_ptr<IniSettingsStore> settings_;
     std::unique_ptr<InMemoryWorkspaceModel> workspace_;
     std::unique_ptr<HaikuMainWindow> main_window_;
-    std::optional<RichTextDocument> pending_composer_document_;
+    std::vector<std::unique_ptr<HaikuComposeWindow>> compose_windows_;
+    std::optional<ComposeMessage> pending_composer_message_;
     std::string active_mailbox_id_;
 };
 

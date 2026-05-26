@@ -19,6 +19,9 @@ target_include_directories(
 add_executable(
     hermes_port_tests
     AccountServiceTests.cpp
+    ComposeControllerTests.cpp
+    ComposePolicyTests.cpp
+    DraftStoreTests.cpp
     FilterEngineTests.cpp
     HelpCatalogTests.cpp
     ImportServiceTests.cpp
@@ -26,6 +29,7 @@ add_executable(
     RendererModeTests.cpp
     IniSettingsStoreTests.cpp
     MailStoreTests.cpp
+    MoodWatchAnalyzerTests.cpp
     NicknameAndAddressBookTests.cpp
     PluginHostTests.cpp
     ReleaseGateTests.cpp
@@ -42,7 +46,6 @@ target_include_directories(
 target_link_libraries(
     hermes_port_tests
     PRIVATE
-        hermes::port_core
         hermes::legacy_transplants
 )
 

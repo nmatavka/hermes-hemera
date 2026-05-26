@@ -13,9 +13,25 @@
 #include <TextView.h>
 
 #include "HaikuShellHost.h"
+#include "hermes/ComposeMessage.h"
 #include "hermes/WorkspaceModel.h"
 
 namespace hermes::haiku_port {
+
+namespace {
+
+constexpr uint32_t kNewComposeMessage = 'ncmp';
+
+hermes::ComposeMessage BuildDefaultComposeMessage(HaikuShellHost& shell_host) {
+    hermes::ComposeMessage message;
+    message.id = "compose-draft";
+    message.policy = hermes::ComposePolicyFromSettings(shell_host.Settings());
+    message.signature_name = message.policy.default_signature_name;
+    message.stationery_name = message.policy.default_stationery_name;
+    return message;
+}
+
+}  // namespace
 
 HaikuMainWindow::HaikuMainWindow(HaikuShellHost& shell_host)
     : BWindow(BRect(100, 100, 1100, 800),
@@ -25,7 +41,7 @@ HaikuMainWindow::HaikuMainWindow(HaikuShellHost& shell_host)
       shell_host_(shell_host) {
     auto* menu_bar = new BMenuBar("menu-bar");
     auto* file_menu = new BMenu("File");
-    file_menu->AddItem(new BMenuItem("New Message", nullptr));
+    file_menu->AddItem(new BMenuItem("New Message", new BMessage(kNewComposeMessage)));
     file_menu->AddSeparatorItem();
     file_menu->AddItem(new BMenuItem("Quit", new BMessage(B_QUIT_REQUESTED)));
     menu_bar->AddItem(file_menu);
@@ -48,6 +64,18 @@ HaikuMainWindow::HaikuMainWindow(HaikuShellHost& shell_host)
         .Add(main_split);
 
     PopulateWorkspace();
+}
+
+void HaikuMainWindow::MessageReceived(BMessage* message) {
+    switch (message->what) {
+        case kNewComposeMessage:
+            shell_host_.OpenComposer(BuildDefaultComposeMessage(shell_host_));
+            return;
+
+        default:
+            BWindow::MessageReceived(message);
+            return;
+    }
 }
 
 bool HaikuMainWindow::QuitRequested() {

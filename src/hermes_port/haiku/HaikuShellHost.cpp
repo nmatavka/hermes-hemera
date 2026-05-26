@@ -2,6 +2,7 @@
 
 #include <Application.h>
 
+#include "HaikuComposeWindow.h"
 #include "HaikuMainWindow.h"
 
 namespace hermes::haiku_port {
@@ -41,8 +42,13 @@ bool HaikuShellHost::OpenMailbox(std::string_view mailbox_id) {
     return true;
 }
 
-bool HaikuShellHost::OpenComposer(const RichTextDocument& document) {
-    pending_composer_document_ = document;
+bool HaikuShellHost::OpenComposer(const ComposeMessage& message) {
+    if (!main_window_) {
+        pending_composer_message_ = message;
+        return true;
+    }
+
+    ShowComposeWindow(message);
     return true;
 }
 
@@ -54,8 +60,8 @@ IniSettingsStore& HaikuShellHost::Settings() {
     return *settings_;
 }
 
-const std::optional<RichTextDocument>& HaikuShellHost::PendingComposerDocument() const {
-    return pending_composer_document_;
+const std::optional<ComposeMessage>& HaikuShellHost::PendingComposerMessage() const {
+    return pending_composer_message_;
 }
 
 void HaikuShellHost::ShowMainWindow() {
@@ -64,6 +70,17 @@ void HaikuShellHost::ShowMainWindow() {
     }
 
     main_window_->Show();
+
+    if (pending_composer_message_) {
+        ShowComposeWindow(*pending_composer_message_);
+        pending_composer_message_.reset();
+    }
+}
+
+void HaikuShellHost::ShowComposeWindow(const ComposeMessage& message) {
+    auto compose_window = std::make_unique<HaikuComposeWindow>(message);
+    compose_window->Show();
+    compose_windows_.push_back(std::move(compose_window));
 }
 
 void HaikuShellHost::SeedWorkspace() {

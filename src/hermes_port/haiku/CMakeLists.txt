@@ -1,5 +1,6 @@
 add_executable(
     hermes_hemera_haiku
+    HaikuComposeWindow.cpp
     Main.cpp
     HaikuMainWindow.cpp
     HaikuShellHost.cpp
