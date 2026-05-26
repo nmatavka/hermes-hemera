@@ -4,6 +4,7 @@
 #include "hermes/ComposeController.h"
 #include "hermes/MemoryRichTextSurface.h"
 #include "hermes/NicknameStore.h"
+#include "hermes/SignatureStore.h"
 
 namespace {
 
@@ -85,20 +86,26 @@ public:
 HERMES_TEST(ComposeControllerAppliesDefaultStationeryAndSupportsEditCommands) {
     hermes::MemoryRichTextSurface surface;
     hermes::FilesystemStationeryStore stationery_store;
+    hermes::FilesystemSignatureStore signature_store;
     std::string error_message;
     HERMES_CHECK(stationery_store.Discover(hermes::tests::FixtureRoot() / "compose" / "stationery",
                                            &error_message));
+    HERMES_CHECK(signature_store.Discover(hermes::tests::FixtureRoot() / "compose" / "signatures",
+                                          &error_message));
 
     hermes::ComposeMessage message;
     message.id = "compose-1";
     message.policy.default_stationery_name = "FollowUp";
 
-    hermes::ComposeController controller(surface, nullptr, nullptr, nullptr, &stationery_store);
+    hermes::ComposeController controller(
+        surface, nullptr, nullptr, nullptr, &stationery_store, &signature_store);
     HERMES_CHECK(controller.Load(message));
     HERMES_CHECK_EQ(controller.HeaderValue(hermes::ComposeHeaderField::kSubject), std::string("Follow-up"));
     HERMES_CHECK_EQ(controller.Snapshot().headers.from_persona, std::string("Work"));
     HERMES_CHECK_EQ(controller.Snapshot().signature_name, std::string("Standard"));
     HERMES_CHECK(controller.Snapshot().body.plain_text.find("before Friday") != std::string::npos);
+    HERMES_CHECK(controller.Snapshot().body.plain_text.find("Nick Example") != std::string::npos);
+    HERMES_CHECK(controller.Snapshot().managed_signature.attached);
     HERMES_CHECK(!controller.IsDirty());
 
     HERMES_CHECK(controller.SelectAll());
@@ -139,6 +146,8 @@ HERMES_TEST(ComposeControllerRoutesSpellMoodBossProtectorAndSendValidation) {
     HERMES_CHECK(controller.Load(message));
     HERMES_CHECK(controller.CheckDocument());
     HERMES_CHECK_EQ(controller.SpellIssues().size(), static_cast<std::size_t>(2));
+    HERMES_CHECK(!surface.Diagnostics().empty());
+    HERMES_CHECK(static_cast<bool>(controller.StatusBanner()));
     const auto suggestions = controller.SuggestionsForCurrentIssue();
     HERMES_CHECK_EQ(suggestions.front(), std::string("the"));
     HERMES_CHECK(controller.ReplaceCurrent("the"));
@@ -161,4 +170,34 @@ HERMES_TEST(ComposeControllerRoutesSpellMoodBossProtectorAndSendValidation) {
     HERMES_CHECK(validation.styled_send.should_warn);
     HERMES_CHECK(validation.mood_watch.score >= 3);
     HERMES_CHECK(validation.warnings.size() >= static_cast<std::size_t>(3));
+    HERMES_CHECK(static_cast<bool>(controller.StatusBanner()));
+    HERMES_CHECK(controller.Diagnostics().size() >= static_cast<std::size_t>(3));
+}
+
+HERMES_TEST(ComposeControllerReplacesAndDetachesManagedSignatures) {
+    hermes::MemoryRichTextSurface surface;
+    hermes::FilesystemSignatureStore signature_store;
+    std::string error_message;
+    HERMES_CHECK(signature_store.Discover(hermes::tests::FixtureRoot() / "compose" / "signatures",
+                                          &error_message));
+
+    hermes::ComposeMessage message;
+    message.id = "compose-3";
+    message.signature_name = "Standard";
+    message.body.plain_text = "Body";
+
+    hermes::ComposeController controller(surface, nullptr, nullptr, nullptr, nullptr, &signature_store);
+    HERMES_CHECK(controller.Load(message));
+    HERMES_CHECK(controller.Snapshot().managed_signature.attached);
+    HERMES_CHECK(controller.Snapshot().body.plain_text.find("Nick Example") != std::string::npos);
+
+    HERMES_CHECK(controller.ApplySignature("Alternate"));
+    HERMES_CHECK(controller.Snapshot().body.plain_text.find("Status Desk") != std::string::npos);
+    HERMES_CHECK(controller.Snapshot().body.html_fragment.find("<strong>") != std::string::npos);
+
+    const auto managed = controller.Snapshot().managed_signature;
+    HERMES_CHECK(managed.attached);
+    HERMES_CHECK(surface.SetSelection({managed.start + 2, 0}));
+    HERMES_CHECK(controller.PasteText("x"));
+    HERMES_CHECK(!controller.Snapshot().managed_signature.attached);
 }

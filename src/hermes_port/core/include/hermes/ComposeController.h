@@ -2,12 +2,14 @@
 
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "hermes/ComposeMessage.h"
 #include "hermes/MoodWatchAnalyzer.h"
+#include "hermes/SignatureStore.h"
 #include "hermes/SpellService.h"
 #include "hermes/StationeryStore.h"
 
@@ -81,13 +83,43 @@ struct ComposeSendValidation {
     std::vector<std::string> blocking_errors;
 };
 
+enum class ComposeDiagnosticSource {
+    kSpell,
+    kMoodWatch,
+    kBossProtector,
+    kStyledSend,
+};
+
+enum class ComposeDiagnosticSeverity {
+    kInfo,
+    kWarning,
+    kError,
+};
+
+struct ComposeVisualDiagnostic {
+    ComposeDiagnosticSource source = ComposeDiagnosticSource::kSpell;
+    ComposeDiagnosticSeverity severity = ComposeDiagnosticSeverity::kInfo;
+    ComposeTextRegion region = ComposeTextRegion::kBody;
+    std::size_t offset = 0;
+    std::size_t length = 0;
+    std::string label;
+    std::string message;
+};
+
+struct ComposeStatusBanner {
+    ComposeDiagnosticSeverity severity = ComposeDiagnosticSeverity::kInfo;
+    std::string title;
+    std::string message;
+};
+
 class ComposeController {
 public:
     ComposeController(RichTextSurface& surface,
                       SpellService* spell_service = nullptr,
                       MoodWatchAnalyzer* mood_watch_analyzer = nullptr,
                       NicknameStore* nickname_store = nullptr,
-                      StationeryStore* stationery_store = nullptr);
+                      StationeryStore* stationery_store = nullptr,
+                      SignatureStore* signature_store = nullptr);
 
     bool Load(const ComposeMessage& message);
     ComposeMessage Snapshot() const;
@@ -100,6 +132,8 @@ public:
 
     bool ApplyStationery(std::string_view name);
     std::vector<StationeryTemplate> AvailableStationery() const;
+    bool ApplySignature(std::string_view name);
+    std::vector<SignatureTemplate> AvailableSignatures() const;
 
     bool Undo();
     bool Redo();
@@ -123,15 +157,25 @@ public:
     BossProtectorResult RunBossProtector();
     StyledSendPlan ResolveStyledSendPlan() const;
     ComposeSendValidation ValidateForSend();
+    const std::vector<ComposeVisualDiagnostic>& Diagnostics() const;
+    std::optional<ComposeStatusBanner> StatusBanner() const;
 
     bool IsDirty() const;
 
 private:
+    void RefreshVisualFeedback();
+    void RefreshBanner();
+    void RefreshBodyDiagnostics();
+    void MaybeDetachManagedSignature();
+    bool RemoveManagedSignatureFromBody();
+    bool InsertSignatureIntoBody(const SignatureTemplate& signature);
+
     RichTextSurface& surface_;
     SpellService* spell_service_ = nullptr;
     MoodWatchAnalyzer* mood_watch_analyzer_ = nullptr;
     NicknameStore* nickname_store_ = nullptr;
     StationeryStore* stationery_store_ = nullptr;
+    SignatureStore* signature_store_ = nullptr;
 
     ComposeMessage message_;
     bool dirty_ = false;
@@ -142,6 +186,9 @@ private:
     std::size_t current_spell_issue_index_ = 0;
     ComposeMoodWatchResult last_mood_watch_result_;
     BossProtectorResult last_boss_protector_result_;
+    std::vector<ComposeVisualDiagnostic> diagnostics_;
+    std::optional<ComposeStatusBanner> status_banner_;
+    std::optional<ComposeSendValidation> last_send_validation_;
 };
 
 }  // namespace hermes

@@ -20,6 +20,7 @@ add_executable(
     hermes_port_tests
     AccountServiceTests.cpp
     ComposeControllerTests.cpp
+    ComposeQueueTests.cpp
     ComposePolicyTests.cpp
     DraftStoreTests.cpp
     FilterEngineTests.cpp
@@ -34,6 +35,7 @@ add_executable(
     PluginHostTests.cpp
     ReleaseGateTests.cpp
     SearchAndJunkTests.cpp
+    SignatureStoreTests.cpp
     TransportServiceTests.cpp
 )
 

@@ -10,6 +10,7 @@ target_link_libraries(
     hermes_hemera_haiku
     PRIVATE
         hermes::port_core
+        hermes::port_paige
 )
 
 target_include_directories(

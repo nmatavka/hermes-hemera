@@ -50,6 +50,14 @@ struct ComposePolicy {
     bool send_styled_only = false;
 };
 
+struct ManagedSignatureBlock {
+    bool attached = false;
+    std::string name;
+    std::size_t start = 0;
+    std::size_t length = 0;
+    std::string plain_text;
+};
+
 struct ComposeMessage {
     std::string id;
     ComposeHeaders headers;
@@ -57,6 +65,7 @@ struct ComposeMessage {
     RichTextDocument body;
     std::string stationery_name;
     std::string signature_name;
+    ManagedSignatureBlock managed_signature;
 };
 
 ComposePolicy ComposePolicyFromSettings(const SettingsStore& settings, std::string_view section = "Settings");

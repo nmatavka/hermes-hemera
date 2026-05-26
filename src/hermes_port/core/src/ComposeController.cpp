@@ -4,11 +4,11 @@
 #include <array>
 #include <cctype>
 #include <sstream>
+#include <utility>
 
 #include "hermes/DraftStore.h"
 #include "hermes/NicknameStore.h"
 #include "hermes/RichTextSurface.h"
-#include "hermes/StationeryStore.h"
 
 namespace hermes {
 
@@ -89,14 +89,6 @@ std::string JoinHeaderValue(std::string base, std::string_view addition) {
     base += ", ";
     base += trimmed_addition;
     return base;
-}
-
-std::string CopySelectedText(const RichTextDocument& document, const TextSelection& selection) {
-    if (selection.start > document.plain_text.size()) {
-        return {};
-    }
-    const std::size_t max_length = document.plain_text.size() - selection.start;
-    return document.plain_text.substr(selection.start, std::min(selection.length, max_length));
 }
 
 std::vector<std::string> SplitCsvLike(std::string_view value) {
@@ -271,41 +263,129 @@ bool HasStyles(const RichTextDocument& document) {
     return !document.html_fragment.empty() && !IsWhitespaceOnly(document.html_fragment);
 }
 
+std::string EscapeHtml(std::string_view text) {
+    std::string escaped;
+    escaped.reserve(text.size() + 32);
+
+    for (char ch : text) {
+        switch (ch) {
+            case '&':
+                escaped += "&amp;";
+                break;
+            case '<':
+                escaped += "&lt;";
+                break;
+            case '>':
+                escaped += "&gt;";
+                break;
+            case '"':
+                escaped += "&quot;";
+                break;
+            case '\'':
+                escaped += "&#39;";
+                break;
+            case '\n':
+                escaped += "<br/>\n";
+                break;
+            default:
+                escaped.push_back(ch);
+                break;
+        }
+    }
+
+    return escaped;
+}
+
+TextDiagnosticSeverity ToTextSeverity(ComposeDiagnosticSeverity severity) {
+    switch (severity) {
+        case ComposeDiagnosticSeverity::kInfo:
+            return TextDiagnosticSeverity::kInfo;
+        case ComposeDiagnosticSeverity::kWarning:
+            return TextDiagnosticSeverity::kWarning;
+        case ComposeDiagnosticSeverity::kError:
+            return TextDiagnosticSeverity::kError;
+    }
+    return TextDiagnosticSeverity::kInfo;
+}
+
+std::optional<ComposeStatusBanner> BannerFromValidation(const ComposeSendValidation& validation) {
+    if (!validation.blocking_errors.empty()) {
+        return ComposeStatusBanner{
+            ComposeDiagnosticSeverity::kError,
+            "Send blocked",
+            validation.blocking_errors.front(),
+        };
+    }
+    if (!validation.warnings.empty()) {
+        return ComposeStatusBanner{
+            ComposeDiagnosticSeverity::kWarning,
+            "Send confirmation required",
+            validation.warnings.front(),
+        };
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 ComposeController::ComposeController(RichTextSurface& surface,
                                      SpellService* spell_service,
                                      MoodWatchAnalyzer* mood_watch_analyzer,
                                      NicknameStore* nickname_store,
-                                     StationeryStore* stationery_store)
+                                     StationeryStore* stationery_store,
+                                     SignatureStore* signature_store)
     : surface_(surface),
       spell_service_(spell_service),
       mood_watch_analyzer_(mood_watch_analyzer),
       nickname_store_(nickname_store),
-      stationery_store_(stationery_store) {}
+      stationery_store_(stationery_store),
+      signature_store_(signature_store) {}
 
 bool ComposeController::Load(const ComposeMessage& message) {
     message_ = message;
     message_.body.read_only = message_.policy.read_only;
     dirty_ = false;
-    spell_dirty_ = false;
-    mood_dirty_ = false;
-    boss_protector_dirty_ = false;
+    spell_dirty_ = true;
+    mood_dirty_ = true;
+    boss_protector_dirty_ = true;
     spell_issues_.clear();
     current_spell_issue_index_ = 0;
     last_mood_watch_result_ = {};
     last_boss_protector_result_ = {};
+    last_send_validation_.reset();
+    diagnostics_.clear();
+    status_banner_.reset();
 
     if (!surface_.Load(message_.body)) {
         return false;
     }
 
+    bool auto_applied = false;
     if (message_.stationery_name.empty() && !message_.policy.default_stationery_name.empty() &&
         stationery_store_ && Trim(message_.body.plain_text).empty() && Trim(message_.headers.subject).empty()) {
-        const bool applied = ApplyStationery(message_.policy.default_stationery_name);
-        dirty_ = false;
-        return applied;
+        if (!ApplyStationery(message_.policy.default_stationery_name)) {
+            return false;
+        }
+        auto_applied = true;
     }
+
+    if (message_.signature_name.empty() && !message_.policy.default_signature_name.empty()) {
+        message_.signature_name = message_.policy.default_signature_name;
+    }
+
+    if (!message_.managed_signature.attached && !message_.signature_name.empty() && signature_store_) {
+        if (!ApplySignature(message_.signature_name)) {
+            return false;
+        }
+        auto_applied = true;
+    }
+
+    if (auto_applied) {
+        dirty_ = false;
+    }
+
+    RefreshVisualFeedback();
+    RefreshBanner();
     return true;
 }
 
@@ -374,6 +454,8 @@ bool ComposeController::ApplyStationery(std::string_view name) {
     if (!Trim(stationery->body.html_fragment).empty()) {
         if (!Trim(body.html_fragment).empty()) {
             body.html_fragment += "\n";
+        } else if (!Trim(body.plain_text).empty()) {
+            body.html_fragment = "<div>" + EscapeHtml(body.plain_text) + "</div>\n";
         }
         body.html_fragment += stationery->body.html_fragment;
     }
@@ -384,12 +466,46 @@ bool ComposeController::ApplyStationery(std::string_view name) {
     if (!surface_.Load(body)) {
         return false;
     }
-    MarkBodyEdited();
+
+    if (!message_.signature_name.empty() && !message_.managed_signature.attached && signature_store_) {
+        if (!ApplySignature(message_.signature_name)) {
+            return false;
+        }
+    } else {
+        MarkBodyEdited();
+    }
     return true;
 }
 
 std::vector<StationeryTemplate> ComposeController::AvailableStationery() const {
     return stationery_store_ ? stationery_store_->Templates() : std::vector<StationeryTemplate>{};
+}
+
+bool ComposeController::ApplySignature(std::string_view name) {
+    if (!signature_store_) {
+        return false;
+    }
+
+    const auto signature = signature_store_->Find(name);
+    if (!signature) {
+        return false;
+    }
+
+    if (!RemoveManagedSignatureFromBody()) {
+        return false;
+    }
+
+    if (!InsertSignatureIntoBody(*signature)) {
+        return false;
+    }
+
+    message_.signature_name = signature->name;
+    MarkBodyEdited();
+    return true;
+}
+
+std::vector<SignatureTemplate> ComposeController::AvailableSignatures() const {
+    return signature_store_ ? signature_store_->Templates() : std::vector<SignatureTemplate>{};
 }
 
 bool ComposeController::Undo() {
@@ -409,26 +525,23 @@ bool ComposeController::Redo() {
 }
 
 bool ComposeController::SelectAll() {
-    const RichTextDocument snapshot = surface_.Snapshot();
-    return surface_.SetSelection({0, snapshot.plain_text.size()});
+    return surface_.SelectAll();
 }
 
 std::string ComposeController::CopySelection() const {
-    const RichTextDocument snapshot = surface_.Snapshot();
-    return CopySelectedText(snapshot, surface_.Selection());
+    return surface_.CopySelection();
 }
 
 std::string ComposeController::CutSelection() {
-    const std::string copied = CopySelection();
+    const std::string copied = surface_.CutSelection();
     if (!copied.empty()) {
-        (void)surface_.ReplaceSelection("");
         MarkBodyEdited();
     }
     return copied;
 }
 
 bool ComposeController::PasteText(std::string_view text) {
-    if (!surface_.ReplaceSelection(text)) {
+    if (!surface_.Paste(text)) {
         return false;
     }
     MarkBodyEdited();
@@ -439,6 +552,8 @@ bool ComposeController::CheckDocument(const SpellCheckRequest& request) {
     spell_issues_.clear();
     current_spell_issue_index_ = 0;
     if (!spell_service_ || !spell_service_->IsAvailable()) {
+        RefreshVisualFeedback();
+        RefreshBanner();
         return false;
     }
 
@@ -452,6 +567,8 @@ bool ComposeController::CheckDocument(const SpellCheckRequest& request) {
     }
 
     spell_dirty_ = false;
+    RefreshVisualFeedback();
+    RefreshBanner();
     return true;
 }
 
@@ -472,6 +589,8 @@ bool ComposeController::IgnoreCurrentWord() {
     }
     spell_service_->IgnoreWord(spell_issues_[current_spell_issue_index_].issue.word);
     ++current_spell_issue_index_;
+    RefreshVisualFeedback();
+    RefreshBanner();
     return true;
 }
 
@@ -483,6 +602,8 @@ bool ComposeController::AddCurrentWord(const SpellCheckRequest& request) {
         spell_service_->AddWordToUserDictionary(spell_issues_[current_spell_issue_index_].issue.word, request);
     if (added) {
         ++current_spell_issue_index_;
+        RefreshVisualFeedback();
+        RefreshBanner();
     }
     return added;
 }
@@ -510,14 +631,24 @@ bool ComposeController::ReplaceCurrent(std::string_view replacement) {
     }
 
     ++current_spell_issue_index_;
+    RefreshVisualFeedback();
+    RefreshBanner();
     return true;
 }
 
 void ComposeController::MarkBodyEdited() {
+    MaybeDetachManagedSignature();
     dirty_ = true;
     spell_dirty_ = true;
     mood_dirty_ = true;
     boss_protector_dirty_ = true;
+    spell_issues_.clear();
+    current_spell_issue_index_ = 0;
+    last_mood_watch_result_ = {};
+    last_boss_protector_result_ = {};
+    last_send_validation_.reset();
+    RefreshVisualFeedback();
+    RefreshBanner();
 }
 
 void ComposeController::MarkHeaderEdited(ComposeHeaderField /*field*/) {
@@ -525,6 +656,13 @@ void ComposeController::MarkHeaderEdited(ComposeHeaderField /*field*/) {
     spell_dirty_ = true;
     mood_dirty_ = true;
     boss_protector_dirty_ = true;
+    spell_issues_.clear();
+    current_spell_issue_index_ = 0;
+    last_mood_watch_result_ = {};
+    last_boss_protector_result_ = {};
+    last_send_validation_.reset();
+    RefreshVisualFeedback();
+    RefreshBanner();
 }
 
 AutomaticComposeChecks ComposeController::ServiceAutomaticChecks(std::chrono::milliseconds idle_time) {
@@ -553,6 +691,8 @@ AutomaticComposeChecks ComposeController::ServiceAutomaticChecks(std::chrono::mi
 ComposeMoodWatchResult ComposeController::RunMoodWatch() {
     last_mood_watch_result_ = {};
     if (!mood_watch_analyzer_ || !message_.policy.mood_watch_enabled || !mood_watch_analyzer_->IsAvailable()) {
+        RefreshVisualFeedback();
+        RefreshBanner();
         return last_mood_watch_result_;
     }
 
@@ -562,6 +702,8 @@ ComposeMoodWatchResult ComposeController::RunMoodWatch() {
         last_mood_watch_result_.available = true;
         last_mood_watch_result_.score = 0;
         mood_dirty_ = false;
+        RefreshVisualFeedback();
+        RefreshBanner();
         return last_mood_watch_result_;
     }
 
@@ -585,6 +727,8 @@ ComposeMoodWatchResult ComposeController::RunMoodWatch() {
     }
 
     mood_dirty_ = false;
+    RefreshVisualFeedback();
+    RefreshBanner();
     return last_mood_watch_result_;
 }
 
@@ -625,6 +769,8 @@ BossProtectorResult ComposeController::RunBossProtector() {
 
     last_boss_protector_result_.warning_required = !last_boss_protector_result_.hits.empty();
     boss_protector_dirty_ = false;
+    RefreshVisualFeedback();
+    RefreshBanner();
     return last_boss_protector_result_;
 }
 
@@ -667,11 +813,266 @@ ComposeSendValidation ComposeController::ValidateForSend() {
         validation.warnings.push_back("Boss Protector requires confirmation for one or more recipients.");
     }
 
+    last_send_validation_ = validation;
+    RefreshVisualFeedback();
+    RefreshBanner();
     return validation;
+}
+
+const std::vector<ComposeVisualDiagnostic>& ComposeController::Diagnostics() const {
+    return diagnostics_;
+}
+
+std::optional<ComposeStatusBanner> ComposeController::StatusBanner() const {
+    return status_banner_;
 }
 
 bool ComposeController::IsDirty() const {
     return dirty_;
+}
+
+void ComposeController::RefreshVisualFeedback() {
+    diagnostics_.clear();
+
+    for (const auto& issue : spell_issues_) {
+        diagnostics_.push_back({
+            ComposeDiagnosticSource::kSpell,
+            ComposeDiagnosticSeverity::kWarning,
+            issue.region,
+            issue.issue.offset,
+            issue.issue.length,
+            "Spelling",
+            "Possible misspelling: " + issue.issue.word,
+        });
+    }
+
+    for (const auto& match : last_mood_watch_result_.matches) {
+        diagnostics_.push_back({
+            ComposeDiagnosticSource::kMoodWatch,
+            ComposeDiagnosticSeverity::kWarning,
+            match.region,
+            match.offset,
+            match.length,
+            "MoodWatch",
+            match.text.empty() ? "MoodWatch match" : "MoodWatch flagged: " + match.text,
+        });
+    }
+
+    for (const auto& hit : last_boss_protector_result_.hits) {
+        diagnostics_.push_back({
+            ComposeDiagnosticSource::kBossProtector,
+            ComposeDiagnosticSeverity::kWarning,
+            ComposeTextRegion::kSubject,
+            0,
+            0,
+            "Boss Protector",
+            hit.recipient + ": " + hit.reason,
+        });
+    }
+
+    const StyledSendPlan styled_send = last_send_validation_ ? last_send_validation_->styled_send
+                                                             : ResolveStyledSendPlan();
+    if (styled_send.should_warn) {
+        diagnostics_.push_back({
+            ComposeDiagnosticSource::kStyledSend,
+            ComposeDiagnosticSeverity::kInfo,
+            ComposeTextRegion::kBody,
+            0,
+            0,
+            "Styled content",
+            "Styled content will require send-time confirmation.",
+        });
+    }
+
+    RefreshBodyDiagnostics();
+}
+
+void ComposeController::RefreshBanner() {
+    status_banner_.reset();
+
+    if (last_send_validation_) {
+        status_banner_ = BannerFromValidation(*last_send_validation_);
+        if (status_banner_) {
+            return;
+        }
+    }
+
+    if (last_boss_protector_result_.warning_required) {
+        status_banner_ = ComposeStatusBanner{
+            ComposeDiagnosticSeverity::kWarning,
+            "Boss Protector",
+            "One or more recipients require extra confirmation.",
+        };
+        return;
+    }
+
+    if (last_mood_watch_result_.available) {
+        if (last_mood_watch_result_.score >= 4 && message_.policy.mood_warn_when_on_fire) {
+            status_banner_ = ComposeStatusBanner{
+                ComposeDiagnosticSeverity::kWarning,
+                "MoodWatch",
+                "MoodWatch flagged this message at the highest level.",
+            };
+            return;
+        }
+        if (last_mood_watch_result_.score >= 3 && message_.policy.mood_warn_when_probably_offend) {
+            status_banner_ = ComposeStatusBanner{
+                ComposeDiagnosticSeverity::kWarning,
+                "MoodWatch",
+                "MoodWatch thinks this message is probably offensive.",
+            };
+            return;
+        }
+        if (last_mood_watch_result_.score >= 2 && message_.policy.mood_warn_when_might_offend) {
+            status_banner_ = ComposeStatusBanner{
+                ComposeDiagnosticSeverity::kWarning,
+                "MoodWatch",
+                "MoodWatch thinks this message might offend the recipient.",
+            };
+            return;
+        }
+    }
+
+    if (!spell_issues_.empty()) {
+        status_banner_ = ComposeStatusBanner{
+            ComposeDiagnosticSeverity::kInfo,
+            "Spelling",
+            "Spelling found " + std::to_string(spell_issues_.size()) + " issue(s).",
+        };
+    }
+}
+
+void ComposeController::RefreshBodyDiagnostics() {
+    std::vector<TextDiagnostic> body_diagnostics;
+    for (const auto& diagnostic : diagnostics_) {
+        if (diagnostic.region != ComposeTextRegion::kBody || diagnostic.length == 0) {
+            continue;
+        }
+
+        TextDiagnosticKind kind = TextDiagnosticKind::kSpell;
+        switch (diagnostic.source) {
+            case ComposeDiagnosticSource::kSpell:
+                kind = TextDiagnosticKind::kSpell;
+                break;
+            case ComposeDiagnosticSource::kMoodWatch:
+                kind = TextDiagnosticKind::kMoodWatch;
+                break;
+            case ComposeDiagnosticSource::kBossProtector:
+            case ComposeDiagnosticSource::kStyledSend:
+                kind = TextDiagnosticKind::kStyledContent;
+                break;
+        }
+
+        body_diagnostics.push_back({
+            kind,
+            ToTextSeverity(diagnostic.severity),
+            diagnostic.offset,
+            diagnostic.length,
+            diagnostic.message,
+        });
+    }
+
+    if (body_diagnostics.empty()) {
+        surface_.ClearDiagnostics();
+    } else {
+        surface_.SetDiagnostics(std::move(body_diagnostics));
+    }
+}
+
+void ComposeController::MaybeDetachManagedSignature() {
+    if (!message_.managed_signature.attached) {
+        return;
+    }
+
+    const RichTextDocument snapshot = surface_.Snapshot();
+    if (message_.managed_signature.start > snapshot.plain_text.size()) {
+        message_.managed_signature.attached = false;
+        return;
+    }
+
+    const std::size_t available = snapshot.plain_text.size() - message_.managed_signature.start;
+    if (message_.managed_signature.length > available) {
+        message_.managed_signature.attached = false;
+        return;
+    }
+
+    const std::string current =
+        snapshot.plain_text.substr(message_.managed_signature.start, message_.managed_signature.length);
+    if (current != message_.managed_signature.plain_text) {
+        message_.managed_signature.attached = false;
+    }
+}
+
+bool ComposeController::RemoveManagedSignatureFromBody() {
+    if (!message_.managed_signature.attached) {
+        return true;
+    }
+
+    MaybeDetachManagedSignature();
+    if (!message_.managed_signature.attached) {
+        return true;
+    }
+
+    if (!surface_.SetSelection({message_.managed_signature.start, message_.managed_signature.length})) {
+        return false;
+    }
+    if (!surface_.ReplaceSelection("")) {
+        return false;
+    }
+
+    message_.managed_signature = {};
+    return true;
+}
+
+bool ComposeController::InsertSignatureIntoBody(const SignatureTemplate& signature) {
+    RichTextDocument before = surface_.Snapshot();
+    if (before.read_only) {
+        return false;
+    }
+
+    std::string prefix;
+    if (!before.plain_text.empty()) {
+        prefix = before.plain_text.back() == '\n' ? "\n" : "\n\n";
+    }
+
+    if (!surface_.SetSelection({before.plain_text.size(), 0})) {
+        return false;
+    }
+
+    const std::string inserted = prefix + signature.body.plain_text;
+    if (!inserted.empty() && !surface_.ReplaceSelection(inserted)) {
+        return false;
+    }
+
+    RichTextDocument snapshot = surface_.Snapshot();
+    if (!signature.body.html_fragment.empty() || !before.html_fragment.empty()) {
+        std::string html_prefix;
+        if (!before.plain_text.empty()) {
+            html_prefix = before.plain_text.back() == '\n' ? "<br/>\n" : "<br/><br/>\n";
+        }
+
+        std::string base_html = before.html_fragment;
+        if (base_html.empty() && !before.plain_text.empty()) {
+            base_html = "<div>" + EscapeHtml(before.plain_text) + "</div>";
+        }
+
+        std::string signature_html = signature.body.html_fragment;
+        if (signature_html.empty()) {
+            signature_html = "<div>" + EscapeHtml(signature.body.plain_text) + "</div>";
+        }
+
+        snapshot.html_fragment = base_html + html_prefix + signature_html;
+        if (!surface_.Load(snapshot)) {
+            return false;
+        }
+    }
+
+    message_.managed_signature.attached = true;
+    message_.managed_signature.name = signature.name;
+    message_.managed_signature.start = snapshot.plain_text.size() - signature.body.plain_text.size();
+    message_.managed_signature.length = signature.body.plain_text.size();
+    message_.managed_signature.plain_text = signature.body.plain_text;
+    return true;
 }
 
 }  // namespace hermes

@@ -154,6 +154,17 @@ bool FilesystemDraftStore::SaveDraft(const ComposeMessage& draft, std::string* e
     metadata.SetString("Draft", "Id", draft.id);
     metadata.SetString("Draft", "StationeryName", draft.stationery_name);
     metadata.SetString("Draft", "SignatureName", draft.signature_name);
+    metadata.SetString("Draft",
+                       "ManagedSignatureAttached",
+                       draft.managed_signature.attached ? "1" : "0");
+    metadata.SetString("Draft", "ManagedSignatureName", draft.managed_signature.name);
+    metadata.SetString("Draft",
+                       "ManagedSignatureStart",
+                       std::to_string(draft.managed_signature.start));
+    metadata.SetString("Draft",
+                       "ManagedSignatureLength",
+                       std::to_string(draft.managed_signature.length));
+    metadata.SetString("Draft", "ManagedSignaturePlainText", draft.managed_signature.plain_text);
     metadata.SetString("Headers", "To", draft.headers.to);
     metadata.SetString("Headers", "Cc", draft.headers.cc);
     metadata.SetString("Headers", "Bcc", draft.headers.bcc);
@@ -189,6 +200,16 @@ std::optional<ComposeMessage> FilesystemDraftStore::GetDraft(std::string_view dr
     draft.id = metadata.GetString("Draft", "Id").value_or(std::string(draft_id));
     draft.stationery_name = metadata.GetString("Draft", "StationeryName").value_or("");
     draft.signature_name = metadata.GetString("Draft", "SignatureName").value_or("");
+    draft.managed_signature.attached =
+        metadata.GetBool("Draft", "ManagedSignatureAttached", false);
+    draft.managed_signature.name =
+        metadata.GetString("Draft", "ManagedSignatureName").value_or("");
+    draft.managed_signature.start = static_cast<std::size_t>(
+        metadata.GetInt("Draft", "ManagedSignatureStart", 0));
+    draft.managed_signature.length = static_cast<std::size_t>(
+        metadata.GetInt("Draft", "ManagedSignatureLength", 0));
+    draft.managed_signature.plain_text =
+        metadata.GetString("Draft", "ManagedSignaturePlainText").value_or("");
     draft.headers.to = metadata.GetString("Headers", "To").value_or("");
     draft.headers.cc = metadata.GetString("Headers", "Cc").value_or("");
     draft.headers.bcc = metadata.GetString("Headers", "Bcc").value_or("");

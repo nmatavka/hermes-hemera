@@ -23,6 +23,7 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
     draft.body.html_fragment = "<p>Styled body</p>";
     draft.stationery_name = "FollowUp";
     draft.signature_name = "Standard";
+    draft.managed_signature = {true, "Standard", 12, 8, "Signature"};
 
     std::string error_message;
     HERMES_CHECK(store.SaveDraft(draft, &error_message));
@@ -36,6 +37,10 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
     HERMES_CHECK_EQ(loaded->policy.default_stationery_name, std::string("FollowUp"));
     HERMES_CHECK(loaded->policy.boss_protector_warn_inside_domains);
     HERMES_CHECK_EQ(loaded->policy.boss_protector_inside_domains, std::string("corp.example"));
+    HERMES_CHECK(loaded->managed_signature.attached);
+    HERMES_CHECK_EQ(loaded->managed_signature.name, std::string("Standard"));
+    HERMES_CHECK_EQ(loaded->managed_signature.start, static_cast<std::size_t>(12));
+    HERMES_CHECK_EQ(loaded->managed_signature.length, static_cast<std::size_t>(8));
 
     const auto drafts = store.ListDrafts();
     HERMES_CHECK_EQ(drafts.size(), static_cast<std::size_t>(1));
