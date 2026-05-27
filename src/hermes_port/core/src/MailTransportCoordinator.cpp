@@ -1,9 +1,13 @@
 #include "hermes/MailTransportCoordinator.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -16,6 +20,10 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/md5.h>
+#endif
+
+#if HERMES_HAS_KRB5
+#include <gssapi/gssapi.h>
 #endif
 
 namespace hermes {
@@ -34,6 +42,12 @@ struct ParsedMimeMessage {
     std::string plain_text_body;
     std::string html_body;
     std::vector<MessageAttachment> attachments;
+    std::vector<std::string> attachment_payloads;
+};
+
+struct BuiltReceivedMessage {
+    MessageRecord record;
+    std::vector<std::string> attachment_payloads;
 };
 
 std::int64_t NowUnixSeconds() {
@@ -149,6 +163,83 @@ std::string Base64Decode(const std::string& input) {
     return decoded;
 }
 
+std::string WrapBase64(std::string encoded, std::size_t line_length = 76) {
+    if (encoded.size() <= line_length) {
+        return encoded;
+    }
+    std::string wrapped;
+    wrapped.reserve(encoded.size() + (encoded.size() / line_length) * 2);
+    for (std::size_t offset = 0; offset < encoded.size(); offset += line_length) {
+        wrapped.append(encoded, offset, std::min(line_length, encoded.size() - offset));
+        wrapped += "\r\n";
+    }
+    return wrapped;
+}
+
+int HexValue(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (ch >= 'a' && ch <= 'f') {
+        return 10 + (ch - 'a');
+    }
+    return -1;
+}
+
+std::string DecodeQuotedPrintable(const std::string& input) {
+    std::string decoded;
+    decoded.reserve(input.size());
+    for (std::size_t index = 0; index < input.size(); ++index) {
+        if (input[index] != '=') {
+            decoded.push_back(input[index]);
+            continue;
+        }
+        if (index + 2 < input.size() && input[index + 1] == '\r' && input[index + 2] == '\n') {
+            index += 2;
+            continue;
+        }
+        if (index + 1 < input.size() && input[index + 1] == '\n') {
+            ++index;
+            continue;
+        }
+        if (index + 2 < input.size()) {
+            const int high = HexValue(input[index + 1]);
+            const int low = HexValue(input[index + 2]);
+            if (high >= 0 && low >= 0) {
+                decoded.push_back(static_cast<char>((high << 4) | low));
+                index += 2;
+                continue;
+            }
+        }
+        decoded.push_back('=');
+    }
+    return decoded;
+}
+
+std::string ReplaceAll(std::string value, std::string_view needle, std::string_view replacement) {
+    std::size_t position = 0;
+    while ((position = value.find(needle, position)) != std::string::npos) {
+        value.replace(position, needle.size(), replacement);
+        position += replacement.size();
+    }
+    return value;
+}
+
+std::string KerberosServicePrincipal(const AccountProfile& account,
+                                    std::string_view host,
+                                    std::string_view default_service_name) {
+    std::string format =
+        account.kerberos.service_format.empty() ? "%s@%h" : account.kerberos.service_format;
+    format = ReplaceAll(std::move(format),
+                        "%s",
+                        account.kerberos.service_name.empty() ? std::string(default_service_name)
+                                                              : account.kerberos.service_name);
+    format = ReplaceAll(std::move(format), "%h", host);
+    format = ReplaceAll(std::move(format), "%r", account.kerberos.realm);
+    return format;
+}
+
 std::string HexEncode(const unsigned char* data, std::size_t size) {
     static constexpr char kHex[] = "0123456789abcdef";
     std::string output;
@@ -189,6 +280,202 @@ std::string HmacMd5Hex(const std::string& key, const std::string& input) {
     return {};
 #endif
 }
+
+#if HERMES_HAS_KRB5
+std::string GssStatusToString(OM_uint32 code, int type) {
+    OM_uint32 minor = 0;
+    OM_uint32 context = 0;
+    std::string combined;
+    do {
+        gss_buffer_desc buffer = GSS_C_EMPTY_BUFFER;
+        const OM_uint32 major =
+            gss_display_status(&minor, code, type, GSS_C_NO_OID, &context, &buffer);
+        if (major != GSS_S_COMPLETE) {
+            break;
+        }
+        if (buffer.length > 0 && buffer.value != nullptr) {
+            if (!combined.empty()) {
+                combined += " | ";
+            }
+            combined.append(static_cast<const char*>(buffer.value), buffer.length);
+        }
+        gss_release_buffer(&minor, &buffer);
+    } while (context != 0);
+    return combined;
+}
+
+std::string GssErrorText(OM_uint32 major, OM_uint32 minor) {
+    std::string major_text = GssStatusToString(major, GSS_C_GSS_CODE);
+    std::string minor_text = GssStatusToString(minor, GSS_C_MECH_CODE);
+    if (major_text.empty()) {
+        major_text = "Unknown GSSAPI failure";
+    }
+    if (!minor_text.empty()) {
+        major_text += ": ";
+        major_text += minor_text;
+    }
+    return major_text;
+}
+
+bool PerformGssapiExchange(const std::string& service_principal,
+                           const std::string& authzid,
+                           const std::function<bool(std::string*, std::string*)>& read_challenge,
+                           const std::function<bool(std::string_view, std::string*)>& send_response,
+                           std::string* error_message) {
+    constexpr unsigned char kAuthGssapiProtectionNone = 1;
+
+    OM_uint32 major = 0;
+    OM_uint32 minor = 0;
+    gss_name_t target_name = GSS_C_NO_NAME;
+    gss_ctx_id_t context = GSS_C_NO_CONTEXT;
+    gss_buffer_desc service_buffer = {
+        service_principal.size(),
+        const_cast<char*>(service_principal.data()),
+    };
+    gss_buffer_desc input_token = GSS_C_EMPTY_BUFFER;
+    gss_buffer_desc output_token = GSS_C_EMPTY_BUFFER;
+    gss_buffer_desc unwrap_token = GSS_C_EMPTY_BUFFER;
+    std::string current_challenge;
+
+    major = gss_import_name(&minor,
+                            &service_buffer,
+                            GSS_C_NT_HOSTBASED_SERVICE,
+                            &target_name);
+    if (major != GSS_S_COMPLETE) {
+        if (error_message) {
+            *error_message = GssErrorText(major, minor);
+        }
+        return false;
+    }
+
+    auto cleanup = [&]() {
+        if (target_name != GSS_C_NO_NAME) {
+            gss_release_name(&minor, &target_name);
+        }
+        if (context != GSS_C_NO_CONTEXT) {
+            gss_delete_sec_context(&minor, &context, GSS_C_NO_BUFFER);
+        }
+    };
+
+    if (!read_challenge(&current_challenge, error_message)) {
+        cleanup();
+        return false;
+    }
+
+    do {
+        std::string decoded_challenge = Base64Decode(current_challenge);
+        if (decoded_challenge.empty()) {
+            input_token = GSS_C_EMPTY_BUFFER;
+        } else {
+            input_token.length = decoded_challenge.size();
+            input_token.value = decoded_challenge.data();
+        }
+
+        output_token = GSS_C_EMPTY_BUFFER;
+        major = gss_init_sec_context(&minor,
+                                     GSS_C_NO_CREDENTIAL,
+                                     &context,
+                                     target_name,
+                                     GSS_C_NO_OID,
+                                     GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG,
+                                     0,
+                                     GSS_C_NO_CHANNEL_BINDINGS,
+                                     decoded_challenge.empty() ? GSS_C_NO_BUFFER : &input_token,
+                                     nullptr,
+                                     &output_token,
+                                     nullptr,
+                                     nullptr);
+        if (major != GSS_S_COMPLETE && major != GSS_S_CONTINUE_NEEDED) {
+            if (error_message) {
+                *error_message = GssErrorText(major, minor);
+            }
+            if (output_token.length > 0) {
+                gss_release_buffer(&minor, &output_token);
+            }
+            cleanup();
+            return false;
+        }
+
+        const std::string response = Base64Encode(
+            output_token.length > 0 && output_token.value != nullptr
+                ? std::string(static_cast<const char*>(output_token.value), output_token.length)
+                : std::string());
+        gss_release_buffer(&minor, &output_token);
+        if (!send_response(response, error_message)) {
+            cleanup();
+            return false;
+        }
+
+        if (major == GSS_S_CONTINUE_NEEDED) {
+            if (!read_challenge(&current_challenge, error_message)) {
+                cleanup();
+                return false;
+            }
+        }
+    } while (major == GSS_S_CONTINUE_NEEDED);
+
+    if (!read_challenge(&current_challenge, error_message)) {
+        cleanup();
+        return false;
+    }
+
+    const std::string decoded_final = Base64Decode(current_challenge);
+    if (!decoded_final.empty()) {
+        unwrap_token.length = decoded_final.size();
+        unwrap_token.value = const_cast<char*>(decoded_final.data());
+        gss_buffer_desc unwrapped = GSS_C_EMPTY_BUFFER;
+        int conf_state = 0;
+        gss_qop_t qop_state = 0;
+        major = gss_unwrap(&minor, context, &unwrap_token, &unwrapped, &conf_state, &qop_state);
+        if (major != GSS_S_COMPLETE) {
+            if (error_message) {
+                *error_message = GssErrorText(major, minor);
+            }
+            cleanup();
+            return false;
+        }
+        if (unwrapped.length < 4 || unwrapped.value == nullptr ||
+            !(static_cast<const unsigned char*>(unwrapped.value)[0] & kAuthGssapiProtectionNone)) {
+            gss_release_buffer(&minor, &unwrapped);
+            if (error_message) {
+                *error_message = "GSSAPI server did not offer no-protection SASL mode.";
+            }
+            cleanup();
+            return false;
+        }
+
+        std::string final_payload(static_cast<const char*>(unwrapped.value), unwrapped.length);
+        gss_release_buffer(&minor, &unwrapped);
+        final_payload.resize(4);
+        final_payload[0] = static_cast<char>(kAuthGssapiProtectionNone);
+        final_payload += authzid;
+
+        gss_buffer_desc wrap_input = {final_payload.size(), final_payload.data()};
+        gss_buffer_desc wrapped = GSS_C_EMPTY_BUFFER;
+        major = gss_wrap(&minor, context, 0, qop_state, &wrap_input, &conf_state, &wrapped);
+        if (major != GSS_S_COMPLETE) {
+            if (error_message) {
+                *error_message = GssErrorText(major, minor);
+            }
+            cleanup();
+            return false;
+        }
+
+        const std::string wrapped_response = Base64Encode(
+            wrapped.length > 0 && wrapped.value != nullptr
+                ? std::string(static_cast<const char*>(wrapped.value), wrapped.length)
+                : std::string());
+        gss_release_buffer(&minor, &wrapped);
+        if (!send_response(wrapped_response, error_message)) {
+            cleanup();
+            return false;
+        }
+    }
+
+    cleanup();
+    return true;
+}
+#endif
 
 std::vector<std::string> SplitRecipients(std::string_view value) {
     std::vector<std::string> recipients;
@@ -259,6 +546,39 @@ std::string ParameterValue(std::string_view header_value, std::string_view param
         value_end = header_value.size();
     }
     return TrimQuotes(std::string(header_value.substr(value_start, value_end - value_start)));
+}
+
+std::string StripAngleBrackets(std::string value) {
+    value = Trim(std::move(value));
+    if (value.size() >= 2 && value.front() == '<' && value.back() == '>') {
+        return value.substr(1, value.size() - 2);
+    }
+    return value;
+}
+
+std::string DispositionToken(std::string value) {
+    value = ToLower(Trim(std::move(value)));
+    const std::size_t semicolon = value.find(';');
+    if (semicolon != std::string::npos) {
+        value.erase(semicolon);
+    }
+    return value.empty() ? "attachment" : value;
+}
+
+std::string DecodeTransferEncodedBody(const std::map<std::string, std::string>& headers,
+                                      std::string body) {
+    const auto encoding_it = headers.find("content-transfer-encoding");
+    if (encoding_it == headers.end()) {
+        return body;
+    }
+    const std::string encoding = ToLower(encoding_it->second);
+    if (encoding.find("base64") != std::string::npos) {
+        return Base64Decode(body);
+    }
+    if (encoding.find("quoted-printable") != std::string::npos) {
+        return DecodeQuotedPrintable(body);
+    }
+    return body;
 }
 
 ParsedHeaders ParseTopHeaders(const std::string& raw_message, std::size_t* body_offset) {
@@ -366,6 +686,7 @@ ParsedMimeMessage ParseMimeMessage(const std::string& raw_message) {
         const std::string part_type = ToLower(headers.count("content-type") ? headers.at("content-type") : "text/plain");
         const std::string disposition =
             ToLower(headers.count("content-disposition") ? headers.at("content-disposition") : "");
+        const std::string decoded_part_body = DecodeTransferEncodedBody(headers, part_body);
 
         const bool is_attachment = disposition.find("attachment") != std::string::npos ||
                                    !ParameterValue(headers.count("content-disposition") ? headers.at("content-disposition") : "",
@@ -386,15 +707,22 @@ ParsedMimeMessage ParseMimeMessage(const std::string& raw_message) {
                 attachment.name = "attachment";
             }
             attachment.content_type = headers.count("content-type") ? headers.at("content-type") : "application/octet-stream";
-            attachment.size = part_body.size();
+            attachment.size = decoded_part_body.size();
+            attachment.content_id =
+                StripAngleBrackets(headers.count("content-id") ? headers.at("content-id") : "");
+            attachment.disposition = DispositionToken(headers.count("content-disposition")
+                                                          ? headers.at("content-disposition")
+                                                          : "attachment");
+            attachment.download_complete = true;
             parsed.attachments.push_back(std::move(attachment));
+            parsed.attachment_payloads.push_back(decoded_part_body);
             continue;
         }
 
         if (part_type.find("text/html") != std::string::npos) {
-            parsed.html_body = part_body;
+            parsed.html_body = decoded_part_body;
         } else if (part_type.find("text/plain") != std::string::npos) {
-            parsed.plain_text_body = part_body;
+            parsed.plain_text_body = decoded_part_body;
         }
     }
 
@@ -404,18 +732,21 @@ ParsedMimeMessage ParseMimeMessage(const std::string& raw_message) {
     return parsed;
 }
 
-MessageRecord BuildReceivedMessage(const std::string& raw_message,
-                                   const AccountProfile& account,
-                                   std::string_view mailbox_id,
-                                   std::string_view remote_id,
-                                   std::string_view remote_mailbox,
-                                   bool unread,
-                                   bool download_complete,
-                                   bool flagged = false,
-                                   bool deleted = false,
-                                   bool answered = false) {
+BuiltReceivedMessage BuildReceivedMessage(const std::string& raw_message,
+                                         const AccountProfile& account,
+                                         std::string_view mailbox_id,
+                                         std::string_view remote_id,
+                                         std::string_view remote_mailbox,
+                                         bool unread,
+                                         bool download_complete,
+                                         bool flagged = false,
+                                         bool deleted = false,
+                                         bool answered = false,
+                                         bool honor_download_limits = true,
+                                         bool honor_attachment_omit = true) {
     const ParsedMimeMessage parsed = ParseMimeMessage(raw_message);
-    MessageRecord record;
+    BuiltReceivedMessage built;
+    MessageRecord& record = built.record;
     record.id = remote_mailbox == "INBOX" || remote_mailbox.empty()
                     ? PopMessageId(account.id, remote_id)
                     : ImapMessageId(account.id, mailbox_id, static_cast<std::uint64_t>(std::stoull(std::string(remote_id))));
@@ -431,7 +762,8 @@ MessageRecord BuildReceivedMessage(const std::string& raw_message,
     record.remote_mailbox = std::string(remote_mailbox);
     record.download_complete = download_complete;
     record.attachments = parsed.attachments;
-    record.attachments_omitted = account.imap_omit_attachments && !record.attachments.empty();
+    record.attachments_omitted =
+        honor_attachment_omit && account.imap_omit_attachments && !record.attachments.empty();
     record.flagged = flagged;
     record.deleted = deleted;
     record.answered = answered;
@@ -439,11 +771,49 @@ MessageRecord BuildReceivedMessage(const std::string& raw_message,
     record.created_at = NowUnixSeconds();
     record.updated_at = record.created_at;
 
-    if (account.imap_max_download_size > 0 && record.plain_text_body.size() > account.imap_max_download_size) {
+    if (honor_download_limits && account.imap_max_download_size > 0 &&
+        record.plain_text_body.size() > account.imap_max_download_size) {
         record.plain_text_body.resize(account.imap_max_download_size);
         record.download_complete = false;
     }
-    return record;
+    built.attachment_payloads = parsed.attachment_payloads;
+    if (honor_attachment_omit && account.imap_omit_attachments) {
+        for (auto& attachment : record.attachments) {
+            attachment.omitted = true;
+            attachment.download_complete = false;
+        }
+        built.attachment_payloads.clear();
+    }
+    return built;
+}
+
+std::string ReadAttachmentBytes(const MessageAttachment& attachment) {
+    if (attachment.payload_path.empty()) {
+        return {};
+    }
+    std::ifstream input(attachment.payload_path, std::ios::binary);
+    if (!input.is_open()) {
+        return {};
+    }
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+std::string BuildBodyPart(const MessageRecord& message) {
+    std::ostringstream output;
+    if (!message.html_body.empty()) {
+        output << "Content-Type: multipart/alternative; boundary=\"hermes-alternative\"\r\n\r\n";
+        output << "--hermes-alternative\r\n";
+        output << "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
+        output << message.plain_text_body << "\r\n";
+        output << "--hermes-alternative\r\n";
+        output << "Content-Type: text/html; charset=UTF-8\r\n\r\n";
+        output << message.html_body << "\r\n";
+        output << "--hermes-alternative--\r\n";
+    } else {
+        output << "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
+        output << message.plain_text_body << "\r\n";
+    }
+    return output.str();
 }
 
 std::string BuildSmtpMessage(const MessageRecord& message) {
@@ -452,19 +822,37 @@ std::string BuildSmtpMessage(const MessageRecord& message) {
     output << "From: " << message.sender << "\r\n";
     output << "To: " << message.recipients << "\r\n";
     output << "MIME-Version: 1.0\r\n";
-    if (!message.html_body.empty()) {
-        output << "Content-Type: multipart/alternative; boundary=\"hermes-boundary\"\r\n\r\n";
-        output << "--hermes-boundary\r\n";
-        output << "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
-        output << message.plain_text_body << "\r\n";
-        output << "--hermes-boundary\r\n";
-        output << "Content-Type: text/html; charset=UTF-8\r\n\r\n";
-        output << message.html_body << "\r\n";
-        output << "--hermes-boundary--\r\n";
-    } else {
-        output << "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
-        output << message.plain_text_body << "\r\n";
+
+    if (!message.attachments.empty()) {
+        output << "Content-Type: multipart/mixed; boundary=\"hermes-mixed\"\r\n\r\n";
+        output << "--hermes-mixed\r\n";
+        output << BuildBodyPart(message);
+        for (const auto& attachment : message.attachments) {
+            const std::string payload = ReadAttachmentBytes(attachment);
+            output << "--hermes-mixed\r\n";
+            output << "Content-Type: "
+                   << (attachment.content_type.empty() ? "application/octet-stream" : attachment.content_type);
+            if (!attachment.name.empty()) {
+                output << "; name=\"" << attachment.name << "\"";
+            }
+            output << "\r\n";
+            output << "Content-Disposition: "
+                   << (attachment.disposition.empty() ? "attachment" : attachment.disposition);
+            if (!attachment.name.empty()) {
+                output << "; filename=\"" << attachment.name << "\"";
+            }
+            output << "\r\n";
+            if (!attachment.content_id.empty()) {
+                output << "Content-ID: <" << attachment.content_id << ">\r\n";
+            }
+            output << "Content-Transfer-Encoding: base64\r\n\r\n";
+            output << WrapBase64(Base64Encode(payload)) << "\r\n";
+        }
+        output << "--hermes-mixed--\r\n";
+        return output.str();
     }
+
+    output << BuildBodyPart(message);
     return output.str();
 }
 
@@ -505,6 +893,27 @@ bool ReadDotTerminatedBlock(TransportConnection& connection,
         *block += "\n";
     }
     return false;
+}
+
+bool PersistAttachmentPayloads(MessageStore& message_store,
+                               const MessageRecord& record,
+                               const std::vector<std::string>& payloads,
+                               std::string* error_message) {
+    for (std::size_t index = 0; index < payloads.size(); ++index) {
+        const std::string suggested_name =
+            index < record.attachments.size() && !record.attachments[index].name.empty()
+                ? record.attachments[index].name
+                : "attachment.bin";
+        if (!message_store.SaveAttachmentPayload(record.mailbox_id,
+                                                 record.id,
+                                                 index,
+                                                 suggested_name,
+                                                 payloads[index],
+                                                 error_message)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 class TaskScope {
@@ -771,10 +1180,12 @@ class PopSession {
 public:
     PopSession(const AccountProfile& account,
                std::string password,
+               MessageStore& message_store,
                TransportService& transport_service,
                const TlsProvider& tls_provider)
         : account_(account),
           password_(std::move(password)),
+          message_store_(message_store),
           transport_service_(transport_service),
           tls_provider_(tls_provider) {}
 
@@ -867,14 +1278,18 @@ public:
                 return false;
             }
 
-            MessageRecord record =
+            BuiltReceivedMessage built =
                 BuildReceivedMessage(raw_message, account_, "inbox", entry.second, "INBOX", true, true);
+            MessageRecord record = std::move(built.record);
             record.id = PopMessageId(account_.id, entry.second);
             if (messages) {
                 messages->push_back(record);
             }
             if (state) {
                 state->uidl_to_message_id[entry.second] = record.id;
+            }
+            if (!PersistAttachmentPayloads(message_store_, record, built.attachment_payloads, error_message)) {
+                return false;
             }
 
             if (!account_.leave_mail_on_server || account_.delete_mail_from_server) {
@@ -914,10 +1329,52 @@ private:
             }
 
             case PopAuthMode::kKerberos:
+#if HERMES_HAS_KRB5
+                if (!connection.Send("AUTH GSSAPI\r\n", error_message)) {
+                    return false;
+                }
+                if (!PerformGssapiExchange(
+                        KerberosServicePrincipal(account_, account_.incoming_server, "pop"),
+                        account_.login_name,
+                        [&](std::string* challenge, std::string* challenge_error) {
+                            std::string line;
+                            if (!connection.ReceiveLine(&line, challenge_error)) {
+                                return false;
+                            }
+                            if (line.empty() || line[0] != '+') {
+                                if (challenge_error) {
+                                    *challenge_error = "POP GSSAPI challenge was not received.";
+                                }
+                                return false;
+                            }
+                            *challenge = line.size() > 1 ? Trim(line.substr(1)) : "";
+                            return true;
+                        },
+                        [&](std::string_view response, std::string* send_error) {
+                            return connection.Send(std::string(response) + "\r\n", send_error);
+                        },
+                        error_message)) {
+                    return false;
+                }
+                {
+                    std::string line;
+                    if (!connection.ReceiveLine(&line, error_message)) {
+                        return false;
+                    }
+                    if (line.rfind("+OK", 0) != 0) {
+                        if (error_message) {
+                            *error_message = "POP GSSAPI authentication failed: " + line;
+                        }
+                        return false;
+                    }
+                    return true;
+                }
+#else
                 if (error_message) {
-                    *error_message = "POP Kerberos authentication is not yet implemented.";
+                    *error_message = "Kerberos support is unavailable in this build.";
                 }
                 return false;
+#endif
 
             case PopAuthMode::kRPA:
                 if (error_message) {
@@ -950,6 +1407,7 @@ private:
 
     const AccountProfile& account_;
     std::string password_;
+    MessageStore& message_store_;
     TransportService& transport_service_;
     const TlsProvider& tls_provider_;
 };
@@ -964,10 +1422,12 @@ class ImapSession {
 public:
     ImapSession(const AccountProfile& account,
                 std::string password,
+                MessageStore& message_store,
                 TransportService& transport_service,
                 const TlsProvider& tls_provider)
         : account_(account),
           password_(std::move(password)),
+          message_store_(message_store),
           transport_service_(transport_service),
           tls_provider_(tls_provider) {}
 
@@ -1014,7 +1474,7 @@ public:
         }
 
         std::vector<std::string> select_lines;
-        if (!RunSimpleTagged("SELECT \"" + std::string(remote_mailbox) + "\"", &select_lines, error_message)) {
+        if (!SelectMailbox(remote_mailbox, &select_lines, error_message)) {
             return false;
         }
 
@@ -1045,17 +1505,21 @@ public:
         std::uint64_t last_seen = state ? state->last_seen_uid : 0;
         for (const auto& item : items) {
             const std::string local_mailbox_id = LocalMailboxIdForImap(account_.id, remote_mailbox);
-            MessageRecord record = BuildReceivedMessage(item.raw_message,
-                                                       account_,
-                                                       local_mailbox_id,
-                                                       std::to_string(item.uid),
-                                                       remote_mailbox,
-                                                       item.flags.find("\\Seen") == std::string::npos,
-                                                       true,
-                                                       item.flags.find("\\Flagged") != std::string::npos,
-                                                       item.flags.find("\\Deleted") != std::string::npos,
-                                                       item.flags.find("\\Answered") != std::string::npos);
+            BuiltReceivedMessage built = BuildReceivedMessage(item.raw_message,
+                                                             account_,
+                                                             local_mailbox_id,
+                                                             std::to_string(item.uid),
+                                                             remote_mailbox,
+                                                             item.flags.find("\\Seen") == std::string::npos,
+                                                             true,
+                                                             item.flags.find("\\Flagged") != std::string::npos,
+                                                             item.flags.find("\\Deleted") != std::string::npos,
+                                                             item.flags.find("\\Answered") != std::string::npos);
+            MessageRecord record = std::move(built.record);
             record.id = ImapMessageId(account_.id, local_mailbox_id, item.uid);
+            if (!PersistAttachmentPayloads(message_store_, record, built.attachment_payloads, error_message)) {
+                return false;
+            }
             if (messages) {
                 messages->push_back(record);
             }
@@ -1063,6 +1527,147 @@ public:
         }
         if (state) {
             state->last_seen_uid = last_seen;
+        }
+        return true;
+    }
+
+    bool CreateMailbox(std::string_view remote_mailbox, std::string* error_message) {
+        if (!ConnectAndAuthenticate(error_message)) {
+            return false;
+        }
+        return RunSimpleTagged("CREATE \"" + std::string(remote_mailbox) + "\"", nullptr, error_message);
+    }
+
+    bool RenameMailbox(std::string_view remote_mailbox,
+                       std::string_view new_remote_mailbox,
+                       std::string* error_message) {
+        if (!ConnectAndAuthenticate(error_message)) {
+            return false;
+        }
+        return RunSimpleTagged("RENAME \"" + std::string(remote_mailbox) + "\" \"" +
+                                   std::string(new_remote_mailbox) + "\"",
+                               nullptr,
+                               error_message);
+    }
+
+    bool DeleteMailbox(std::string_view remote_mailbox, std::string* error_message) {
+        if (!ConnectAndAuthenticate(error_message)) {
+            return false;
+        }
+        return RunSimpleTagged("DELETE \"" + std::string(remote_mailbox) + "\"", nullptr, error_message);
+    }
+
+    bool CopyMessage(std::string_view remote_mailbox,
+                     std::string_view remote_message_id,
+                     std::string_view destination_remote_mailbox,
+                     std::string* error_message) {
+        if (!ConnectAndAuthenticate(error_message)) {
+            return false;
+        }
+        std::vector<std::string> ignored;
+        if (!SelectMailbox(remote_mailbox, &ignored, error_message)) {
+            return false;
+        }
+        return RunSimpleTagged("UID COPY " + std::string(remote_message_id) + " \"" +
+                                   std::string(destination_remote_mailbox) + "\"",
+                               nullptr,
+                               error_message);
+    }
+
+    bool SetDeleted(std::string_view remote_mailbox,
+                    std::string_view remote_message_id,
+                    bool deleted,
+                    bool expunge,
+                    std::string* error_message) {
+        if (!ConnectAndAuthenticate(error_message)) {
+            return false;
+        }
+        std::vector<std::string> ignored;
+        if (!SelectMailbox(remote_mailbox, &ignored, error_message)) {
+            return false;
+        }
+        const std::string op = deleted ? "+FLAGS.SILENT" : "-FLAGS.SILENT";
+        if (!RunSimpleTagged("UID STORE " + std::string(remote_message_id) + " " + op + " (\\Deleted)",
+                             nullptr,
+                             error_message)) {
+            return false;
+        }
+        if (deleted && expunge) {
+            return RunSimpleTagged("EXPUNGE", nullptr, error_message);
+        }
+        return true;
+    }
+
+    bool MoveMessage(std::string_view remote_mailbox,
+                     std::string_view remote_message_id,
+                     std::string_view destination_remote_mailbox,
+                     std::string* error_message) {
+        if (!ConnectAndAuthenticate(error_message)) {
+            return false;
+        }
+        std::vector<std::string> ignored;
+        if (!SelectMailbox(remote_mailbox, &ignored, error_message)) {
+            return false;
+        }
+        std::string move_error;
+        if (RunSimpleTagged("UID MOVE " + std::string(remote_message_id) + " \"" +
+                                std::string(destination_remote_mailbox) + "\"",
+                            nullptr,
+                            &move_error)) {
+            return true;
+        }
+        if (!CopyMessage(remote_mailbox, remote_message_id, destination_remote_mailbox, error_message)) {
+            return false;
+        }
+        return SetDeleted(remote_mailbox, remote_message_id, true, true, error_message);
+    }
+
+    bool FetchFullMessage(std::string_view remote_mailbox,
+                          std::string_view remote_message_id,
+                          MessageRecord* record,
+                          std::vector<std::string>* attachment_payloads,
+                          std::string* error_message) {
+        if (!ConnectAndAuthenticate(error_message)) {
+            return false;
+        }
+        std::vector<std::string> ignored;
+        if (!SelectMailbox(remote_mailbox, &ignored, error_message)) {
+            return false;
+        }
+        std::vector<ImapFetchItem> items;
+        if (!FetchItemsByRange(std::string(remote_message_id) + ":" + std::string(remote_message_id),
+                               "BODY.PEEK[]",
+                               &items,
+                               error_message)) {
+            return false;
+        }
+        if (items.empty()) {
+            if (error_message) {
+                *error_message = "IMAP message was not returned by the server.";
+            }
+            return false;
+        }
+        const std::string local_mailbox_id = LocalMailboxIdForImap(account_.id, remote_mailbox);
+        BuiltReceivedMessage built = BuildReceivedMessage(items.front().raw_message,
+                                                         account_,
+                                                         local_mailbox_id,
+                                                         std::string(remote_message_id),
+                                                         remote_mailbox,
+                                                         items.front().flags.find("\\Seen") == std::string::npos,
+                                                         true,
+                                                         items.front().flags.find("\\Flagged") != std::string::npos,
+                                                         items.front().flags.find("\\Deleted") != std::string::npos,
+                                                         items.front().flags.find("\\Answered") != std::string::npos,
+                                                         false,
+                                                         false);
+        if (record) {
+            *record = std::move(built.record);
+            record->id = ImapMessageId(account_.id,
+                                       local_mailbox_id,
+                                       static_cast<std::uint64_t>(std::stoull(std::string(remote_message_id))));
+        }
+        if (attachment_payloads) {
+            *attachment_payloads = std::move(built.attachment_payloads);
         }
         return true;
     }
@@ -1125,18 +1730,61 @@ private:
             }
 
             case ImapAuthMode::kKerberos:
+#if HERMES_HAS_KRB5
+            {
+                const std::string tag = NextTag();
+                if (!connection_->Send(tag + " AUTHENTICATE GSSAPI\r\n", error_message)) {
+                    return false;
+                }
+                if (!PerformGssapiExchange(
+                        KerberosServicePrincipal(account_, account_.incoming_server, "imap"),
+                        account_.login_name,
+                        [&](std::string* challenge, std::string* challenge_error) {
+                            std::string line;
+                            if (!connection_->ReceiveLine(&line, challenge_error)) {
+                                return false;
+                            }
+                            if (line.empty() || line[0] != '+') {
+                                if (challenge_error) {
+                                    *challenge_error = "IMAP GSSAPI challenge was not received.";
+                                }
+                                return false;
+                            }
+                            *challenge = line.size() > 1 ? Trim(line.substr(1)) : "";
+                            return true;
+                        },
+                        [&](std::string_view response, std::string* send_error) {
+                            return connection_->Send(std::string(response) + "\r\n", send_error);
+                        },
+                        error_message)) {
+                    return false;
+                }
+                return ReadTaggedResult(tag, nullptr, error_message);
+            }
+#else
                 if (error_message) {
-                    *error_message = "IMAP Kerberos authentication is not yet implemented.";
+                    *error_message = "Kerberos support is unavailable in this build.";
                 }
                 return false;
+#endif
         }
         return false;
     }
 
     bool FetchItems(std::uint64_t next_uid, std::vector<ImapFetchItem>* items, std::string* error_message) {
+        const char* body_selector =
+            account_.imap_download_mode == ImapDownloadMode::kMinimalHeaders ? "BODY.PEEK[HEADER]"
+                                                                             : "BODY.PEEK[]";
+        return FetchItemsByRange(std::to_string(next_uid) + ":*", body_selector, items, error_message);
+    }
+
+    bool FetchItemsByRange(std::string_view uid_range,
+                           std::string_view body_selector,
+                           std::vector<ImapFetchItem>* items,
+                           std::string* error_message) {
         const std::string tag = NextTag();
-        if (!connection_->Send(tag + " UID FETCH " + std::to_string(next_uid) +
-                                   ":* (UID FLAGS BODY.PEEK[])\r\n",
+        if (!connection_->Send(tag + " UID FETCH " + std::string(uid_range) + " (UID FLAGS " +
+                                   std::string(body_selector) + ")\r\n",
                                error_message)) {
             return false;
         }
@@ -1189,6 +1837,12 @@ private:
         return false;
     }
 
+    bool SelectMailbox(std::string_view remote_mailbox,
+                       std::vector<std::string>* select_lines,
+                       std::string* error_message) {
+        return RunSimpleTagged("SELECT \"" + std::string(remote_mailbox) + "\"", select_lines, error_message);
+    }
+
     bool RunSimpleTagged(const std::string& command,
                          std::vector<std::string>* lines,
                          std::string* error_message) {
@@ -1227,11 +1881,284 @@ private:
 
     const AccountProfile& account_;
     std::string password_;
+    MessageStore& message_store_;
     TransportService& transport_service_;
     const TlsProvider& tls_provider_;
     std::unique_ptr<TransportConnection> connection_;
     int tag_counter_ = 0;
 };
+
+std::optional<AccountProfile> FindAccountById(const AccountService& account_service, std::string_view account_id) {
+    return account_service.FindById(account_id);
+}
+
+bool EnsureRemoteMailbox(MailboxStore& mailbox_store,
+                         const AccountProfile& account,
+                         std::string_view remote_name,
+                         std::string* error_message) {
+    MailboxRecord mailbox;
+    mailbox.id = LocalMailboxIdForImap(account.id, remote_name);
+    mailbox.display_name = std::string(remote_name);
+    mailbox.account_id = account.id;
+    mailbox.protocol = MailboxProtocol::kImap;
+    mailbox.remote_name = std::string(remote_name);
+    mailbox.is_remote = true;
+    return mailbox_store.EnsureMailbox(mailbox, error_message);
+}
+
+bool SaveUpdatedMessage(MessageStore& message_store,
+                        std::string_view mailbox_id,
+                        std::string_view message_id,
+                        const std::function<void(MessageRecord&)>& updater,
+                        std::string* error_message) {
+    const auto record = message_store.GetMessage(mailbox_id, message_id);
+    if (!record) {
+        if (error_message) {
+            *error_message = "Message not found: " + std::string(message_id);
+        }
+        return false;
+    }
+    MessageRecord updated = *record;
+    updater(updated);
+    return message_store.SaveMessage(updated, error_message);
+}
+
+bool OptimisticallyMoveMessage(MessageStore& message_store,
+                               MailboxStore& mailbox_store,
+                               const AccountProfile& account,
+                               std::string_view source_mailbox_id,
+                               std::string_view message_id,
+                               std::string_view destination_remote_mailbox,
+                               std::string* error_message) {
+    if (!EnsureRemoteMailbox(mailbox_store, account, destination_remote_mailbox, error_message)) {
+        return false;
+    }
+    const std::string destination_mailbox_id = LocalMailboxIdForImap(account.id, destination_remote_mailbox);
+    const auto record = message_store.GetMessage(source_mailbox_id, message_id);
+    if (!record) {
+        if (error_message) {
+            *error_message = "Message not found: " + std::string(message_id);
+        }
+        return false;
+    }
+    MessageRecord updated = *record;
+    updated.mailbox_id = destination_mailbox_id;
+    updated.remote_mailbox = std::string(destination_remote_mailbox);
+    updated.deleted = false;
+    if (!message_store.SaveMessage(updated, error_message)) {
+        return false;
+    }
+    return message_store.DeleteMessage(source_mailbox_id, message_id, error_message);
+}
+
+bool OptimisticallyCopyMessage(MessageStore& message_store,
+                               MailboxStore& mailbox_store,
+                               const AccountProfile& account,
+                               std::string_view source_mailbox_id,
+                               std::string_view message_id,
+                               std::string_view destination_remote_mailbox,
+                               std::string* error_message) {
+    if (!EnsureRemoteMailbox(mailbox_store, account, destination_remote_mailbox, error_message)) {
+        return false;
+    }
+    const auto record = message_store.GetMessage(source_mailbox_id, message_id);
+    if (!record) {
+        if (error_message) {
+            *error_message = "Message not found: " + std::string(message_id);
+        }
+        return false;
+    }
+    MessageRecord updated = *record;
+    updated.mailbox_id = LocalMailboxIdForImap(account.id, destination_remote_mailbox);
+    updated.remote_mailbox = std::string(destination_remote_mailbox);
+    return message_store.SaveMessage(updated, error_message);
+}
+
+bool RenameMailboxMessages(MessageStore& message_store,
+                           std::string_view source_mailbox_id,
+                           std::string_view destination_mailbox_id,
+                           std::string_view destination_remote_mailbox,
+                           std::string* error_message) {
+    const auto messages = message_store.ListMessages(source_mailbox_id);
+    for (const auto& message : messages) {
+        MessageRecord updated = message;
+        updated.mailbox_id = std::string(destination_mailbox_id);
+        updated.remote_mailbox = std::string(destination_remote_mailbox);
+        if (!message_store.SaveMessage(updated, error_message)) {
+            return false;
+        }
+        if (!message_store.DeleteMessage(source_mailbox_id, message.id, error_message)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool DeleteMailboxMessages(MessageStore& message_store,
+                           std::string_view mailbox_id,
+                           std::string* error_message) {
+    const auto messages = message_store.ListMessages(mailbox_id);
+    for (const auto& message : messages) {
+        if (!message_store.DeleteMessage(mailbox_id, message.id, error_message)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ReplaySingleImapAction(const ImapActionRecord& action,
+                            AccountService& account_service,
+                            CredentialStore& credential_store,
+                            SyncStateStore& sync_state_store,
+                            MailboxStore& mailbox_store,
+                            MessageStore& message_store,
+                            TransportService& transport_service,
+                            TlsProvider& tls_provider,
+                            std::string* error_message) {
+    const auto account = FindAccountById(account_service, action.account_id);
+    if (!account) {
+        if (error_message) {
+            *error_message = "Unable to find account for IMAP action.";
+        }
+        return false;
+    }
+
+    const auto password = credential_store.LoadCredential(account->id, CredentialKind::kIncoming);
+    if (!password) {
+        if (error_message) {
+            *error_message = "Missing incoming credential for account " + account->id;
+        }
+        return false;
+    }
+
+    ImapSession session(*account, *password, message_store, transport_service, tls_provider);
+    switch (action.kind) {
+        case ImapActionKind::kDelete:
+            if (!action.destination_remote_mailbox.empty()) {
+                return session.MoveMessage(action.remote_mailbox,
+                                           action.remote_message_id,
+                                           action.destination_remote_mailbox,
+                                           error_message);
+            }
+            return session.SetDeleted(action.remote_mailbox,
+                                      action.remote_message_id,
+                                      true,
+                                      !account->mark_as_deleted,
+                                      error_message);
+
+        case ImapActionKind::kUndelete:
+            return session.SetDeleted(action.remote_mailbox,
+                                      action.remote_message_id,
+                                      false,
+                                      false,
+                                      error_message);
+
+        case ImapActionKind::kMove:
+            return session.MoveMessage(action.remote_mailbox,
+                                       action.remote_message_id,
+                                       action.destination_remote_mailbox,
+                                       error_message);
+
+        case ImapActionKind::kCopy:
+            return session.CopyMessage(action.remote_mailbox,
+                                       action.remote_message_id,
+                                       action.destination_remote_mailbox,
+                                       error_message);
+
+        case ImapActionKind::kCreateMailbox:
+            if (!session.CreateMailbox(action.remote_mailbox, error_message)) {
+                return false;
+            }
+            return EnsureRemoteMailbox(mailbox_store, *account, action.remote_mailbox, error_message);
+
+        case ImapActionKind::kRenameMailbox:
+            if (!session.RenameMailbox(action.remote_mailbox, action.rename_target, error_message)) {
+                return false;
+            }
+            {
+                const std::string renamed_mailbox_id = LocalMailboxIdForImap(account->id, action.rename_target);
+                if (mailbox_store.GetMailbox(renamed_mailbox_id).has_value()) {
+                    return true;
+                }
+                if (mailbox_store.GetMailbox(action.mailbox_id).has_value()) {
+                    if (!mailbox_store.RenameMailbox(action.mailbox_id,
+                                                     renamed_mailbox_id,
+                                                     action.rename_target,
+                                                     error_message)) {
+                        return false;
+                    }
+                    return RenameMailboxMessages(message_store,
+                                                 action.mailbox_id,
+                                                 renamed_mailbox_id,
+                                                 action.rename_target,
+                                                 error_message);
+                }
+                return EnsureRemoteMailbox(mailbox_store, *account, action.rename_target, error_message);
+            }
+
+        case ImapActionKind::kDeleteMailbox:
+            if (!session.DeleteMailbox(action.remote_mailbox, error_message)) {
+                return false;
+            }
+            if (mailbox_store.GetMailbox(action.mailbox_id).has_value()) {
+                if (!DeleteMailboxMessages(message_store, action.mailbox_id, error_message)) {
+                    return false;
+                }
+            }
+            return mailbox_store.DeleteMailbox(action.mailbox_id, error_message);
+
+        case ImapActionKind::kFetchAttachment:
+        case ImapActionKind::kFetchFullMessage: {
+            MessageRecord record;
+            std::vector<std::string> payloads;
+            if (!session.FetchFullMessage(action.remote_mailbox,
+                                          action.remote_message_id,
+                                          &record,
+                                          &payloads,
+                                          error_message)) {
+                return false;
+            }
+            if (!message_store.SaveMessage(record, error_message)) {
+                return false;
+            }
+            return PersistAttachmentPayloads(message_store, record, payloads, error_message);
+        }
+
+        case ImapActionKind::kResyncMailbox: {
+            ImapMailboxSyncState state =
+                sync_state_store.LoadImapState(account->id, action.mailbox_id)
+                    .value_or(ImapMailboxSyncState{account->id, action.mailbox_id, 0, 0});
+            state.last_seen_uid = 0;
+            std::vector<MessageRecord> messages;
+            if (!session.SyncMailbox(action.remote_mailbox, &state, &messages, error_message)) {
+                return false;
+            }
+            if (!sync_state_store.SaveImapState(state, error_message)) {
+                return false;
+            }
+            for (const auto& message : messages) {
+                if (!message_store.SaveMessage(message, error_message)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        case ImapActionKind::kRefreshMailboxList: {
+            std::vector<std::string> remote_mailboxes;
+            if (!session.DiscoverMailboxes(&remote_mailboxes, error_message)) {
+                return false;
+            }
+            for (const auto& remote_mailbox : remote_mailboxes) {
+                if (!EnsureRemoteMailbox(mailbox_store, *account, remote_mailbox, error_message)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -1242,7 +2169,8 @@ MailTransportCoordinator::MailTransportCoordinator(AccountService& account_servi
                                                    MessageStore& message_store,
                                                    TransportService& transport_service,
                                                    TlsProvider& tls_provider,
-                                                   MailTaskModel& task_model)
+                                                   MailTaskModel& task_model,
+                                                   ImapActionStore* imap_action_store)
     : account_service_(account_service),
       credential_store_(credential_store),
       sync_state_store_(sync_state_store),
@@ -1250,7 +2178,8 @@ MailTransportCoordinator::MailTransportCoordinator(AccountService& account_servi
       message_store_(message_store),
       transport_service_(transport_service),
       tls_provider_(tls_provider),
-      task_model_(task_model) {}
+      task_model_(task_model),
+      imap_action_store_(imap_action_store) {}
 
 MailTransportSummary MailTransportCoordinator::SendQueued() {
     MailTransportSummary summary;
@@ -1313,6 +2242,7 @@ MailTransportSummary MailTransportCoordinator::SendQueued() {
 
 MailTransportSummary MailTransportCoordinator::CheckMail() {
     MailTransportSummary summary;
+    stop_requested_ = false;
     const auto accounts = account_service_.Accounts();
     if (accounts.empty()) {
         summary.error_message = "No accounts are configured.";
@@ -1322,7 +2252,57 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
     std::string ignored;
     mailbox_store_.EnsureMailbox({"inbox", "Inbox", {}, {}, MailboxProtocol::kLocal, {}, false, true, 0}, &ignored);
 
+    if (imap_action_store_) {
+        for (auto action : imap_action_store_->ListActions()) {
+            if (stop_requested_) {
+                summary.warnings.push_back("IMAP action replay stopped by user request.");
+                break;
+            }
+            if (action.state == ImapActionState::kCompleted || action.state == ImapActionState::kCancelled) {
+                continue;
+            }
+            action.state = ImapActionState::kRunning;
+            action.updated_at = NowUnixSeconds();
+            ++action.attempts;
+            imap_action_store_->SaveAction(action, nullptr);
+
+            std::string action_error;
+            TaskScope task(task_model_,
+                           action.kind == ImapActionKind::kFetchAttachment
+                                   ? MailTaskKind::kAttachmentFetch
+                                   : MailTaskKind::kImapMutation,
+                           action.account_id,
+                           "Replay IMAP action",
+                           "Running");
+            if (ReplaySingleImapAction(action,
+                                       account_service_,
+                                       credential_store_,
+                                       sync_state_store_,
+                                       mailbox_store_,
+                                       message_store_,
+                                       transport_service_,
+                                       tls_provider_,
+                                       &action_error)) {
+                task.Complete("Complete");
+                imap_action_store_->DeleteAction(action.id, nullptr);
+            } else {
+                task.Fail("Failed", action_error);
+                action.state = stop_requested_ ? ImapActionState::kPending : ImapActionState::kFailed;
+                action.updated_at = NowUnixSeconds();
+                action.last_error = action_error;
+                imap_action_store_->SaveAction(action, nullptr);
+                if (!action_error.empty()) {
+                    summary.warnings.push_back(action_error);
+                }
+            }
+        }
+    }
+
     for (const auto& account : accounts) {
+        if (stop_requested_) {
+            summary.warnings.push_back("Mail check stopped by user request.");
+            break;
+        }
         if (!account.check_mail_by_default && (account.uses_pop || account.uses_imap)) {
             continue;
         }
@@ -1338,7 +2318,7 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
             std::vector<MessageRecord> messages;
             TaskScope task(task_model_, MailTaskKind::kReceiving, DisplayName(account), "Check POP mail", "Checking");
             std::string error_message;
-            PopSession session(account, *password, transport_service_, tls_provider_);
+            PopSession session(account, *password, message_store_, transport_service_, tls_provider_);
             if (!session.FetchMessages(&state, &messages, &error_message)) {
                 task.Fail("Failed", error_message);
                 summary.warnings.push_back(error_message);
@@ -1363,7 +2343,7 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
             TaskScope discovery_task(
                 task_model_, MailTaskKind::kMailboxDiscovery, DisplayName(account), "Refresh IMAP mailboxes", "Listing");
             std::string error_message;
-            ImapSession session(account, *password, transport_service_, tls_provider_);
+            ImapSession session(account, *password, message_store_, transport_service_, tls_provider_);
             std::vector<std::string> remote_mailboxes;
             if (!session.DiscoverMailboxes(&remote_mailboxes, &error_message)) {
                 discovery_task.Fail("Failed", error_message);
@@ -1393,7 +2373,7 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
                 std::vector<MessageRecord> messages;
                 TaskScope sync_task(
                     task_model_, MailTaskKind::kImapSync, DisplayName(account), "Sync " + remote_mailbox, "Syncing");
-                ImapSession sync_session(account, *password, transport_service_, tls_provider_);
+                ImapSession sync_session(account, *password, message_store_, transport_service_, tls_provider_);
                 if (!sync_session.SyncMailbox(remote_mailbox, &state, &messages, &error_message)) {
                     sync_task.Fail("Failed", error_message);
                     summary.warnings.push_back(error_message);
@@ -1430,6 +2410,487 @@ MailTransportSummary MailTransportCoordinator::SendAndReceive() {
         combined.error_message = receive_summary.error_message;
     }
     return combined;
+}
+
+MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view mailbox_id, bool full_resync) {
+    MailTransportSummary summary;
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    if (!mailbox || mailbox->protocol != MailboxProtocol::kImap) {
+        summary.error_message = "Mailbox is not an IMAP mailbox.";
+        return summary;
+    }
+
+    const auto account = account_service_.FindById(mailbox->account_id);
+    if (!account) {
+        summary.error_message = "Account for mailbox is unavailable.";
+        return summary;
+    }
+
+    const auto password = credential_store_.LoadCredential(account->id, CredentialKind::kIncoming);
+    if (!password) {
+        summary.error_message = "Missing incoming credential for account " + account->id;
+        return summary;
+    }
+
+    ImapMailboxSyncState state =
+        sync_state_store_.LoadImapState(account->id, mailbox->id)
+            .value_or(ImapMailboxSyncState{account->id, mailbox->id, 0, 0});
+    if (full_resync) {
+        state.last_seen_uid = 0;
+    }
+
+    std::vector<MessageRecord> messages;
+    std::string error_message;
+    ImapSession session(*account, *password, message_store_, transport_service_, tls_provider_);
+    if (!session.SyncMailbox(mailbox->remote_name, &state, &messages, &error_message)) {
+        summary.error_message = error_message;
+        return summary;
+    }
+    sync_state_store_.SaveImapState(state, nullptr);
+    for (const auto& message : messages) {
+        message_store_.SaveMessage(message, nullptr);
+        ++summary.messages_received;
+    }
+    summary.success = true;
+    return summary;
+}
+
+bool MailTransportCoordinator::QueueDeleteMessage(std::string_view mailbox_id,
+                                                  std::string_view message_id,
+                                                  std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!mailbox || mailbox->protocol != MailboxProtocol::kImap || !message) {
+        if (error_message) {
+            *error_message = "IMAP message not found.";
+        }
+        return false;
+    }
+    const auto account = account_service_.FindById(mailbox->account_id);
+    if (!account) {
+        if (error_message) {
+            *error_message = "Account for IMAP message is unavailable.";
+        }
+        return false;
+    }
+
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kDelete;
+    action.state = ImapActionState::kPending;
+    action.account_id = account->id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
+    action.message_id = std::string(message_id);
+    action.remote_message_id = message->remote_id;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+
+    if (account->transfer_to_trash_on_delete) {
+        action.destination_remote_mailbox =
+            account->trash_mailbox_name.empty() ? "Trash" : account->trash_mailbox_name;
+        if (!OptimisticallyMoveMessage(message_store_,
+                                       mailbox_store_,
+                                       *account,
+                                       mailbox_id,
+                                       message_id,
+                                       action.destination_remote_mailbox,
+                                       error_message)) {
+            return false;
+        }
+    } else if (account->mark_as_deleted) {
+        if (!SaveUpdatedMessage(message_store_,
+                                mailbox_id,
+                                message_id,
+                                [](MessageRecord& updated) { updated.deleted = true; },
+                                error_message)) {
+            return false;
+        }
+    } else if (!message_store_.DeleteMessage(mailbox_id, message_id, error_message)) {
+        return false;
+    }
+
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueUndeleteMessage(std::string_view mailbox_id,
+                                                    std::string_view message_id,
+                                                    std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!mailbox || mailbox->protocol != MailboxProtocol::kImap || !message) {
+        if (error_message) {
+            *error_message = "IMAP message not found.";
+        }
+        return false;
+    }
+
+    if (!SaveUpdatedMessage(message_store_,
+                            mailbox_id,
+                            message_id,
+                            [](MessageRecord& updated) { updated.deleted = false; },
+                            error_message)) {
+        return false;
+    }
+
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kUndelete;
+    action.state = ImapActionState::kPending;
+    action.account_id = mailbox->account_id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
+    action.message_id = std::string(message_id);
+    action.remote_message_id = message->remote_id;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueMoveMessage(std::string_view mailbox_id,
+                                                std::string_view message_id,
+                                                std::string_view destination_mailbox_id,
+                                                std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto source_mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    const auto destination_mailbox = mailbox_store_.GetMailbox(destination_mailbox_id);
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!source_mailbox || !destination_mailbox || !message ||
+        source_mailbox->protocol != MailboxProtocol::kImap ||
+        destination_mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP move source or destination is unavailable.";
+        }
+        return false;
+    }
+    const auto account = account_service_.FindById(source_mailbox->account_id);
+    if (!account) {
+        if (error_message) {
+            *error_message = "Account for IMAP move is unavailable.";
+        }
+        return false;
+    }
+    if (!OptimisticallyMoveMessage(message_store_,
+                                   mailbox_store_,
+                                   *account,
+                                   mailbox_id,
+                                   message_id,
+                                   destination_mailbox->remote_name,
+                                   error_message)) {
+        return false;
+    }
+
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kMove;
+    action.state = ImapActionState::kPending;
+    action.account_id = account->id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = source_mailbox->remote_name;
+    action.message_id = std::string(message_id);
+    action.remote_message_id = message->remote_id;
+    action.destination_mailbox_id = std::string(destination_mailbox_id);
+    action.destination_remote_mailbox = destination_mailbox->remote_name;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueCopyMessage(std::string_view mailbox_id,
+                                                std::string_view message_id,
+                                                std::string_view destination_mailbox_id,
+                                                std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto source_mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    const auto destination_mailbox = mailbox_store_.GetMailbox(destination_mailbox_id);
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!source_mailbox || !destination_mailbox || !message ||
+        source_mailbox->protocol != MailboxProtocol::kImap ||
+        destination_mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP copy source or destination is unavailable.";
+        }
+        return false;
+    }
+    const auto account = account_service_.FindById(source_mailbox->account_id);
+    if (!account) {
+        if (error_message) {
+            *error_message = "Account for IMAP copy is unavailable.";
+        }
+        return false;
+    }
+    if (!OptimisticallyCopyMessage(message_store_,
+                                   mailbox_store_,
+                                   *account,
+                                   mailbox_id,
+                                   message_id,
+                                   destination_mailbox->remote_name,
+                                   error_message)) {
+        return false;
+    }
+
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kCopy;
+    action.state = ImapActionState::kPending;
+    action.account_id = account->id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = source_mailbox->remote_name;
+    action.message_id = std::string(message_id);
+    action.remote_message_id = message->remote_id;
+    action.destination_mailbox_id = std::string(destination_mailbox_id);
+    action.destination_remote_mailbox = destination_mailbox->remote_name;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueCreateMailbox(std::string_view account_id,
+                                                  std::string_view remote_name,
+                                                  std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto account = account_service_.FindById(account_id);
+    if (!account) {
+        if (error_message) {
+            *error_message = "IMAP account is unavailable.";
+        }
+        return false;
+    }
+    if (!EnsureRemoteMailbox(mailbox_store_, *account, remote_name, error_message)) {
+        return false;
+    }
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kCreateMailbox;
+    action.state = ImapActionState::kPending;
+    action.account_id = account->id;
+    action.mailbox_id = LocalMailboxIdForImap(account->id, remote_name);
+    action.remote_mailbox = std::string(remote_name);
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueRenameMailbox(std::string_view mailbox_id,
+                                                  std::string_view new_remote_name,
+                                                  std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    if (!mailbox || mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP mailbox is unavailable.";
+        }
+        return false;
+    }
+    const auto account = account_service_.FindById(mailbox->account_id);
+    if (!account) {
+        if (error_message) {
+            *error_message = "IMAP account is unavailable.";
+        }
+        return false;
+    }
+    const std::string renamed_mailbox_id = LocalMailboxIdForImap(account->id, new_remote_name);
+    if (!mailbox_store_.RenameMailbox(mailbox_id, renamed_mailbox_id, new_remote_name, error_message)) {
+        return false;
+    }
+    if (!RenameMailboxMessages(message_store_,
+                               mailbox_id,
+                               renamed_mailbox_id,
+                               new_remote_name,
+                               error_message)) {
+        return false;
+    }
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kRenameMailbox;
+    action.state = ImapActionState::kPending;
+    action.account_id = account->id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
+    action.rename_target = std::string(new_remote_name);
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueDeleteMailbox(std::string_view mailbox_id, std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    if (!mailbox || mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP mailbox is unavailable.";
+        }
+        return false;
+    }
+    if (!DeleteMailboxMessages(message_store_, mailbox_id, error_message)) {
+        return false;
+    }
+    if (!mailbox_store_.DeleteMailbox(mailbox_id, error_message)) {
+        return false;
+    }
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kDeleteMailbox;
+    action.state = ImapActionState::kPending;
+    action.account_id = mailbox->account_id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueFetchAttachment(std::string_view mailbox_id,
+                                                    std::string_view message_id,
+                                                    std::size_t attachment_index,
+                                                    std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!mailbox || !message || mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP message is unavailable.";
+        }
+        return false;
+    }
+    if (attachment_index >= message->attachments.size()) {
+        if (error_message) {
+            *error_message = "Attachment index is out of range.";
+        }
+        return false;
+    }
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kFetchAttachment;
+    action.state = ImapActionState::kPending;
+    action.account_id = mailbox->account_id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
+    action.message_id = std::string(message_id);
+    action.remote_message_id = message->remote_id;
+    action.attachment_index = attachment_index;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueFetchFullMessage(std::string_view mailbox_id,
+                                                     std::string_view message_id,
+                                                     std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!mailbox || !message || mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP message is unavailable.";
+        }
+        return false;
+    }
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kFetchFullMessage;
+    action.state = ImapActionState::kPending;
+    action.account_id = mailbox->account_id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
+    action.message_id = std::string(message_id);
+    action.remote_message_id = message->remote_id;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::RetryImapAction(std::string_view action_id, std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto action = imap_action_store_->GetAction(action_id);
+    if (!action) {
+        if (error_message) {
+            *error_message = "IMAP action not found.";
+        }
+        return false;
+    }
+    ImapActionRecord updated = *action;
+    updated.state = ImapActionState::kPending;
+    updated.updated_at = NowUnixSeconds();
+    updated.last_error.clear();
+    return imap_action_store_->SaveAction(updated, error_message);
+}
+
+bool MailTransportCoordinator::CancelImapAction(std::string_view action_id, std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto action = imap_action_store_->GetAction(action_id);
+    if (!action) {
+        if (error_message) {
+            *error_message = "IMAP action not found.";
+        }
+        return false;
+    }
+    ImapActionRecord updated = *action;
+    updated.state = ImapActionState::kCancelled;
+    updated.updated_at = NowUnixSeconds();
+    return imap_action_store_->SaveAction(updated, error_message);
+}
+
+bool MailTransportCoordinator::StopActiveTasks() {
+    stop_requested_ = true;
+    return true;
 }
 
 }  // namespace hermes

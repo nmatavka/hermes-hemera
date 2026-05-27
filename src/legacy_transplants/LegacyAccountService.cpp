@@ -105,6 +105,19 @@ SmtpAuthMode SmtpAuthFromSettings(const SettingsStore& settings, std::string_vie
     return SmtpAuthMode::kNone;
 }
 
+ImapDownloadMode ImapDownloadModeFromSettings(const SettingsStore& settings,
+                                              std::string_view section,
+                                              bool omit_attachments,
+                                              std::size_t max_download_size) {
+    if (settings.GetBool(section, "IMAPMinDownload", false)) {
+        return ImapDownloadMode::kMinimalHeaders;
+    }
+    if (omit_attachments || max_download_size > 0) {
+        return ImapDownloadMode::kMessageBody;
+    }
+    return ImapDownloadMode::kFullMessage;
+}
+
 bool LooksLikeAccountSection(const SettingsStore& settings, std::string_view section) {
     static constexpr const char* kKeys[] = {
         "POPAccount",
@@ -155,7 +168,12 @@ AccountProfile ProfileFromSection(const SettingsStore& settings, std::string_vie
     profile.imap_max_download_size =
         static_cast<std::size_t>(std::max(settings.GetInt(section, "IMAPMaxDownloadSize", 0), 0));
     profile.imap_omit_attachments = settings.GetBool(section, "IMAPOmitAttachments", false);
+    profile.mark_as_deleted = settings.GetBool(section, "MarkAsDeleted", false);
     profile.transfer_to_trash_on_delete = settings.GetBool(section, "TransferToTrashOnDelete", false);
+    profile.imap_download_mode = ImapDownloadModeFromSettings(settings,
+                                                              section,
+                                                              profile.imap_omit_attachments,
+                                                              profile.imap_max_download_size);
     profile.imap_directory_prefix = settings.GetString(section, "ImapDirectoryPrefix").value_or("");
     profile.trash_mailbox_name = settings.GetString(section, "TrashMailboxName").value_or("Trash");
     profile.kerberos.service_name =

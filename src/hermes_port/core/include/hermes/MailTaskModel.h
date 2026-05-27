@@ -12,6 +12,8 @@ enum class MailTaskKind {
     kReceiving,
     kImapSync,
     kMailboxDiscovery,
+    kImapMutation,
+    kAttachmentFetch,
     kAuthentication,
     kTls,
 };

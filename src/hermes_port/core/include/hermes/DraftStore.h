@@ -34,6 +34,7 @@ private:
     std::filesystem::path MetadataPath(std::string_view draft_id) const;
     std::filesystem::path PlainBodyPath(std::string_view draft_id) const;
     std::filesystem::path HtmlBodyPath(std::string_view draft_id) const;
+    std::filesystem::path AttachmentsDirectory(std::string_view draft_id) const;
 
     std::filesystem::path root_directory_;
 };

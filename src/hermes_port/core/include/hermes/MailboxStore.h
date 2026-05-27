@@ -34,6 +34,11 @@ public:
     virtual bool EnsureMailbox(const MailboxRecord& mailbox, std::string* error_message = nullptr) = 0;
     virtual std::vector<MailboxRecord> ListMailboxes() const = 0;
     virtual std::optional<MailboxRecord> GetMailbox(std::string_view mailbox_id) const = 0;
+    virtual bool DeleteMailbox(std::string_view mailbox_id, std::string* error_message = nullptr) = 0;
+    virtual bool RenameMailbox(std::string_view mailbox_id,
+                               std::string_view new_mailbox_id,
+                               std::string_view new_display_name = {},
+                               std::string* error_message = nullptr) = 0;
 };
 
 class FilesystemMailboxStore final : public MailboxStore {
@@ -43,6 +48,11 @@ public:
     bool EnsureMailbox(const MailboxRecord& mailbox, std::string* error_message = nullptr) override;
     std::vector<MailboxRecord> ListMailboxes() const override;
     std::optional<MailboxRecord> GetMailbox(std::string_view mailbox_id) const override;
+    bool DeleteMailbox(std::string_view mailbox_id, std::string* error_message = nullptr) override;
+    bool RenameMailbox(std::string_view mailbox_id,
+                       std::string_view new_mailbox_id,
+                       std::string_view new_display_name = {},
+                       std::string* error_message = nullptr) override;
 
     std::filesystem::path RootDirectory() const;
 

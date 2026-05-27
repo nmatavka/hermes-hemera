@@ -37,6 +37,12 @@ enum class SmtpAuthMode {
     kPlain,
 };
 
+enum class ImapDownloadMode {
+    kMinimalHeaders,
+    kMessageBody,
+    kFullMessage,
+};
+
 struct KerberosSettings {
     std::string service_name;
     std::string realm;
@@ -68,7 +74,9 @@ struct AccountProfile {
     std::size_t big_message_threshold = 0;
     std::size_t imap_max_download_size = 0;
     bool imap_omit_attachments = false;
+    bool mark_as_deleted = false;
     bool transfer_to_trash_on_delete = false;
+    ImapDownloadMode imap_download_mode = ImapDownloadMode::kFullMessage;
     std::string imap_directory_prefix;
     std::string trash_mailbox_name;
     KerberosSettings kerberos;

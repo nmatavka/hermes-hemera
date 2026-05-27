@@ -41,6 +41,17 @@ MessageRecord BuildQueuedRecord(const ComposeMessage& message, std::string_view 
     queued.created_at = static_cast<std::int64_t>(now);
     queued.updated_at = queued.created_at;
     queued.unread = false;
+    for (const auto& attachment : message.attachments) {
+        MessageAttachment queued_attachment;
+        queued_attachment.name = attachment.display_name;
+        queued_attachment.content_type = attachment.mime_type;
+        queued_attachment.size = static_cast<std::size_t>(attachment.size);
+        queued_attachment.payload_path = attachment.source_path.string();
+        queued_attachment.content_id = attachment.content_id;
+        queued_attachment.disposition = attachment.inline_disposition ? "inline" : "attachment";
+        queued_attachment.download_complete = true;
+        queued.attachments.push_back(std::move(queued_attachment));
+    }
     return queued;
 }
 

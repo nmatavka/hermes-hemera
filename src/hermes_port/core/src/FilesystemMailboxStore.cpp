@@ -93,6 +93,53 @@ bool FilesystemMailboxStore::EnsureMailbox(const MailboxRecord& mailbox, std::st
     return metadata.SaveToFile(MetadataPath(mailbox_directory), error_message);
 }
 
+bool FilesystemMailboxStore::DeleteMailbox(std::string_view mailbox_id, std::string* error_message) {
+    std::error_code remove_error;
+    std::filesystem::remove_all(MailboxesDirectory() / std::string(mailbox_id), remove_error);
+    if (remove_error && error_message) {
+        *error_message = "Unable to delete mailbox: " + remove_error.message();
+    }
+    return !remove_error;
+}
+
+bool FilesystemMailboxStore::RenameMailbox(std::string_view mailbox_id,
+                                           std::string_view new_mailbox_id,
+                                           std::string_view new_display_name,
+                                           std::string* error_message) {
+    if (mailbox_id.empty() || new_mailbox_id.empty()) {
+        if (error_message) {
+            *error_message = "Mailbox ids must not be empty.";
+        }
+        return false;
+    }
+
+    const auto existing = GetMailbox(mailbox_id);
+    if (!existing) {
+        if (error_message) {
+            *error_message = "Mailbox not found: " + std::string(mailbox_id);
+        }
+        return false;
+    }
+
+    std::error_code rename_error;
+    std::filesystem::rename(MailboxesDirectory() / std::string(mailbox_id),
+                            MailboxesDirectory() / std::string(new_mailbox_id),
+                            rename_error);
+    if (rename_error) {
+        if (error_message) {
+            *error_message = "Unable to rename mailbox: " + rename_error.message();
+        }
+        return false;
+    }
+
+    MailboxRecord updated = *existing;
+    updated.id = std::string(new_mailbox_id);
+    if (!new_display_name.empty()) {
+        updated.display_name = std::string(new_display_name);
+    }
+    return EnsureMailbox(updated, error_message);
+}
+
 std::vector<MailboxRecord> FilesystemMailboxStore::ListMailboxes() const {
     std::vector<MailboxRecord> mailboxes;
     const std::filesystem::path directory = MailboxesDirectory();

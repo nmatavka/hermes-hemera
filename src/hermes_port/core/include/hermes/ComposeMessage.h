@@ -1,7 +1,10 @@
 #pragma once
 
+#include <filesystem>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "hermes/RichTextSurface.h"
 #include "hermes/SettingsStore.h"
@@ -58,11 +61,21 @@ struct ManagedSignatureBlock {
     std::string plain_text;
 };
 
+struct ComposeAttachment {
+    std::string display_name;
+    std::filesystem::path source_path;
+    std::string mime_type;
+    std::uint64_t size = 0;
+    std::string content_id;
+    bool inline_disposition = false;
+};
+
 struct ComposeMessage {
     std::string id;
     ComposeHeaders headers;
     ComposePolicy policy;
     RichTextDocument body;
+    std::vector<ComposeAttachment> attachments;
     std::string stationery_name;
     std::string signature_name;
     ManagedSignatureBlock managed_signature;

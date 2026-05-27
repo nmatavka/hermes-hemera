@@ -23,6 +23,11 @@ struct MessageAttachment {
     std::string content_type;
     std::size_t size = 0;
     bool omitted = false;
+    std::string payload_path;
+    std::string content_id;
+    std::string disposition;
+    bool download_complete = true;
+    std::string fetch_error;
 };
 
 struct MessageRecord {
@@ -59,10 +64,31 @@ public:
     virtual bool DeleteMessage(std::string_view mailbox_id,
                                std::string_view message_id,
                                std::string* error_message = nullptr) = 0;
+    virtual bool CopyMessage(std::string_view source_mailbox_id,
+                             std::string_view message_id,
+                             std::string_view destination_mailbox_id,
+                             std::string* error_message = nullptr) = 0;
     virtual bool MoveMessage(std::string_view source_mailbox_id,
                              std::string_view message_id,
                              std::string_view destination_mailbox_id,
                              std::string* error_message = nullptr) = 0;
+    virtual bool SaveAttachmentPayload(std::string_view mailbox_id,
+                                       std::string_view message_id,
+                                       std::size_t attachment_index,
+                                       std::string_view suggested_name,
+                                       std::string_view payload,
+                                       std::string* error_message = nullptr) = 0;
+    virtual bool ImportAttachmentFile(std::string_view mailbox_id,
+                                      std::string_view message_id,
+                                      std::size_t attachment_index,
+                                      const std::filesystem::path& source_path,
+                                      std::string* error_message = nullptr) = 0;
+    virtual std::optional<std::string> LoadAttachmentPayload(std::string_view mailbox_id,
+                                                             std::string_view message_id,
+                                                             std::size_t attachment_index) const = 0;
+    virtual std::optional<std::filesystem::path> AttachmentPath(std::string_view mailbox_id,
+                                                                std::string_view message_id,
+                                                                std::size_t attachment_index) const = 0;
 };
 
 class FilesystemMessageStore final : public MessageStore {
@@ -75,14 +101,36 @@ public:
     bool DeleteMessage(std::string_view mailbox_id,
                        std::string_view message_id,
                        std::string* error_message = nullptr) override;
+    bool CopyMessage(std::string_view source_mailbox_id,
+                     std::string_view message_id,
+                     std::string_view destination_mailbox_id,
+                     std::string* error_message = nullptr) override;
     bool MoveMessage(std::string_view source_mailbox_id,
                      std::string_view message_id,
                      std::string_view destination_mailbox_id,
                      std::string* error_message = nullptr) override;
+    bool SaveAttachmentPayload(std::string_view mailbox_id,
+                               std::string_view message_id,
+                               std::size_t attachment_index,
+                               std::string_view suggested_name,
+                               std::string_view payload,
+                               std::string* error_message = nullptr) override;
+    bool ImportAttachmentFile(std::string_view mailbox_id,
+                              std::string_view message_id,
+                              std::size_t attachment_index,
+                              const std::filesystem::path& source_path,
+                              std::string* error_message = nullptr) override;
+    std::optional<std::string> LoadAttachmentPayload(std::string_view mailbox_id,
+                                                     std::string_view message_id,
+                                                     std::size_t attachment_index) const override;
+    std::optional<std::filesystem::path> AttachmentPath(std::string_view mailbox_id,
+                                                        std::string_view message_id,
+                                                        std::size_t attachment_index) const override;
 
 private:
     std::filesystem::path MailboxDirectory(std::string_view mailbox_id) const;
     std::filesystem::path MessagePath(std::string_view mailbox_id, std::string_view message_id) const;
+    std::filesystem::path AttachmentsDirectory(std::string_view message_id) const;
     static std::optional<MessageRecord> ReadMessageFile(const std::filesystem::path& path, std::string_view mailbox_id);
 
     std::filesystem::path root_directory_;

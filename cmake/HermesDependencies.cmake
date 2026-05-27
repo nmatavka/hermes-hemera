@@ -82,12 +82,80 @@ find_path(
         "${HERMES_KRB5_ROOT}/src/include"
         "${HERMES_KRB5_ROOT}/include"
 )
-if(HERMES_KRB5_INCLUDE_DIR)
+find_path(
+    HERMES_GSSAPI_INCLUDE_DIR
+    NAMES gssapi/gssapi.h
+    HINTS
+        "${HERMES_KRB5_ROOT}/src/include"
+        "${HERMES_KRB5_ROOT}/include"
+)
+find_library(
+    HERMES_GSSAPI_LIBRARY
+    NAMES gssapi_krb5 gssapi
+)
+find_library(
+    HERMES_KRB5_LIBRARY
+    NAMES krb5
+)
+find_library(
+    HERMES_K5CRYPTO_LIBRARY
+    NAMES k5crypto
+)
+find_library(
+    HERMES_COMERR_LIBRARY
+    NAMES com_err
+)
+find_library(
+    HERMES_GSS_FRAMEWORK
+    NAMES GSS
+)
+
+if(HERMES_KRB5_INCLUDE_DIR AND HERMES_GSSAPI_INCLUDE_DIR AND HERMES_GSSAPI_LIBRARY)
     set(HERMES_HAS_KRB5 1)
     target_include_directories(
         hermes_port_dependencies
         INTERFACE
             "${HERMES_KRB5_INCLUDE_DIR}"
+            "${HERMES_GSSAPI_INCLUDE_DIR}"
+    )
+    target_link_libraries(
+        hermes_port_dependencies
+        INTERFACE
+            "${HERMES_GSSAPI_LIBRARY}"
+    )
+    if(HERMES_KRB5_LIBRARY)
+        target_link_libraries(
+            hermes_port_dependencies
+            INTERFACE
+                "${HERMES_KRB5_LIBRARY}"
+        )
+    endif()
+    if(HERMES_K5CRYPTO_LIBRARY)
+        target_link_libraries(
+            hermes_port_dependencies
+            INTERFACE
+                "${HERMES_K5CRYPTO_LIBRARY}"
+        )
+    endif()
+    if(HERMES_COMERR_LIBRARY)
+        target_link_libraries(
+            hermes_port_dependencies
+            INTERFACE
+                "${HERMES_COMERR_LIBRARY}"
+        )
+    endif()
+elseif(HERMES_KRB5_INCLUDE_DIR AND HERMES_GSSAPI_INCLUDE_DIR AND HERMES_GSS_FRAMEWORK)
+    set(HERMES_HAS_KRB5 1)
+    target_include_directories(
+        hermes_port_dependencies
+        INTERFACE
+            "${HERMES_KRB5_INCLUDE_DIR}"
+            "${HERMES_GSSAPI_INCLUDE_DIR}"
+    )
+    target_link_libraries(
+        hermes_port_dependencies
+        INTERFACE
+            "${HERMES_GSS_FRAMEWORK}"
     )
 endif()
 

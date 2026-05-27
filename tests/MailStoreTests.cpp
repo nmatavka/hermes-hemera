@@ -1,6 +1,8 @@
 #include "TestPaths.h"
 #include "TestRegistry.h"
 
+#include <fstream>
+
 #include "hermes/MailboxStore.h"
 #include "hermes/MessageStore.h"
 
@@ -99,4 +101,39 @@ HERMES_TEST(FilesystemMessageStoreMovesAndDeletesMessages) {
     HERMES_CHECK(static_cast<bool>(store.GetMessage("sent", "84")));
     HERMES_CHECK(store.DeleteMessage("sent", "84", &error_message));
     HERMES_CHECK(!store.GetMessage("sent", "84"));
+}
+
+HERMES_TEST(FilesystemMessageStorePersistsAttachmentPayloads) {
+    hermes::tests::ScopedTempDirectory temp("hermes-message-attachments");
+    hermes::FilesystemMessageStore store(temp.Path());
+
+    const auto source_attachment = temp.Path() / "report.txt";
+    {
+        std::ofstream output(source_attachment);
+        output << "payload";
+    }
+
+    hermes::MessageRecord message;
+    message.id = "msg-attachment";
+    message.mailbox_id = "out";
+    message.subject = "Attachment";
+    message.sender = "alice@example.com";
+    message.recipients = "bob@example.com";
+    message.plain_text_body = "See file";
+    hermes::MessageAttachment attachment;
+    attachment.name = "report.txt";
+    attachment.content_type = "text/plain";
+    attachment.size = 7;
+    attachment.payload_path = source_attachment.string();
+    message.attachments.push_back(attachment);
+
+    std::string error_message;
+    HERMES_CHECK(store.SaveMessage(message, &error_message));
+    const auto loaded = store.GetMessage("out", "msg-attachment");
+    HERMES_CHECK(static_cast<bool>(loaded));
+    HERMES_CHECK_EQ(loaded->attachments.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK(!loaded->attachments.front().payload_path.empty());
+    const auto payload = store.LoadAttachmentPayload("out", "msg-attachment", 0);
+    HERMES_CHECK(static_cast<bool>(payload));
+    HERMES_CHECK_EQ(*payload, std::string("payload"));
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <filesystem>
 #include <sstream>
 #include <utility>
 
@@ -506,6 +507,56 @@ bool ComposeController::ApplySignature(std::string_view name) {
 
 std::vector<SignatureTemplate> ComposeController::AvailableSignatures() const {
     return signature_store_ ? signature_store_->Templates() : std::vector<SignatureTemplate>{};
+}
+
+const std::vector<ComposeAttachment>& ComposeController::Attachments() const {
+    return message_.attachments;
+}
+
+bool ComposeController::AddAttachment(const ComposeAttachment& attachment, std::string* error_message) {
+    ComposeAttachment stored = attachment;
+    if (stored.display_name.empty() && !stored.source_path.empty()) {
+        stored.display_name = stored.source_path.filename().string();
+    }
+    if (stored.display_name.empty()) {
+        if (error_message) {
+            *error_message = "Attachment display name must not be empty.";
+        }
+        return false;
+    }
+    if (stored.source_path.empty()) {
+        if (error_message) {
+            *error_message = "Attachment source path must not be empty.";
+        }
+        return false;
+    }
+
+    std::error_code stat_error;
+    if (!std::filesystem::exists(stored.source_path, stat_error) || stat_error) {
+        if (error_message) {
+            *error_message = "Attachment source file is unavailable: " + stored.source_path.string();
+        }
+        return false;
+    }
+    if (stored.size == 0) {
+        const auto size = std::filesystem::file_size(stored.source_path, stat_error);
+        if (!stat_error) {
+            stored.size = static_cast<std::uint64_t>(size);
+        }
+    }
+
+    message_.attachments.push_back(std::move(stored));
+    dirty_ = true;
+    return true;
+}
+
+bool ComposeController::RemoveAttachment(std::size_t index) {
+    if (index >= message_.attachments.size()) {
+        return false;
+    }
+    message_.attachments.erase(message_.attachments.begin() + static_cast<std::ptrdiff_t>(index));
+    dirty_ = true;
+    return true;
 }
 
 bool ComposeController::Undo() {

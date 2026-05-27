@@ -62,3 +62,24 @@ HERMES_TEST(LegacyAccountServiceCanLoadMultipleAccountSections) {
     HERMES_CHECK_EQ(work->imap_auth, hermes::ImapAuthMode::kCramMd5);
     HERMES_CHECK_EQ(work->smtp_auth, hermes::SmtpAuthMode::kPlain);
 }
+
+HERMES_TEST(LegacyAccountServiceProjectsImapDeletionAndDownloadSettings) {
+    hermes::IniSettingsStore settings;
+    settings.SetString("Settings", "RealName", "IMAP");
+    settings.SetString("Settings", "ReturnAddress", "imap@example.com");
+    settings.SetString("Settings", "LoginName", "imap");
+    settings.SetString("Settings", "UsesIMAP", "1");
+    settings.SetString("Settings", "ImapServer", "imap.example.com");
+    settings.SetString("Settings", "SMTPServer", "smtp.example.com");
+    settings.SetString("Settings", "IMAPMinDownload", "1");
+    settings.SetString("Settings", "IMAPOmitAttachments", "1");
+    settings.SetString("Settings", "MarkAsDeleted", "1");
+    settings.SetString("Settings", "TransferToTrashOnDelete", "0");
+
+    hermes::LegacyAccountService service;
+    HERMES_CHECK(service.LoadFromSettings(settings));
+    const auto account = service.Accounts().front();
+    HERMES_CHECK(account.mark_as_deleted);
+    HERMES_CHECK(account.imap_omit_attachments);
+    HERMES_CHECK_EQ(account.imap_download_mode, hermes::ImapDownloadMode::kMinimalHeaders);
+}

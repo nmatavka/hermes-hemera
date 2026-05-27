@@ -3,6 +3,7 @@
 #include <Application.h>
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <system_error>
 
 #include "HaikuComposeWindow.h"
@@ -42,6 +43,7 @@ HaikuShellHost::HaikuShellHost()
       account_service_(std::make_unique<LegacyAccountService>()),
       credential_store_(std::make_unique<FilesystemCredentialStore>(DataRoot())),
       sync_state_store_(std::make_unique<FilesystemSyncStateStore>(DataRoot())),
+      imap_action_store_(std::make_unique<FilesystemImapActionStore>(DataRoot())),
       task_model_(std::make_unique<InMemoryMailTaskModel>()),
       draft_store_(std::make_unique<FilesystemDraftStore>(DataRoot() / "drafts")),
       mailbox_store_(std::make_unique<FilesystemMailboxStore>(DataRoot())),
@@ -57,7 +59,8 @@ HaikuShellHost::HaikuShellHost()
                                                                         *message_store_,
                                                                         *transport_service_,
                                                                         *tls_provider_,
-                                                                        *task_model_)),
+                                                                        *task_model_,
+                                                                        imap_action_store_.get())),
       paige_runtime_(std::make_unique<PaigeRuntime>()) {
     std::string ignored;
     (void)paige_runtime_->Initialize(&ignored);
@@ -105,8 +108,157 @@ bool HaikuShellHost::SendAndReceive() {
     return summary.success;
 }
 
+bool HaikuShellHost::RefreshMailbox(std::string_view mailbox_id) {
+    const auto summary = transport_coordinator_->RefreshMailbox(mailbox_id, false);
+    ReloadWorkspace();
+    return summary.success;
+}
+
+bool HaikuShellHost::ResyncMailbox(std::string_view mailbox_id) {
+    const auto summary = transport_coordinator_->RefreshMailbox(mailbox_id, true);
+    ReloadWorkspace();
+    return summary.success;
+}
+
+bool HaikuShellHost::DeleteMessage(std::string_view mailbox_id, std::string_view message_id) {
+    std::string error_message;
+    const bool queued = transport_coordinator_->QueueDeleteMessage(mailbox_id, message_id, &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+bool HaikuShellHost::UndeleteMessage(std::string_view mailbox_id, std::string_view message_id) {
+    std::string error_message;
+    const bool queued = transport_coordinator_->QueueUndeleteMessage(mailbox_id, message_id, &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+bool HaikuShellHost::MoveMessage(std::string_view mailbox_id,
+                                 std::string_view message_id,
+                                 std::string_view destination_mailbox_id) {
+    std::string error_message;
+    const bool queued = transport_coordinator_->QueueMoveMessage(mailbox_id,
+                                                                 message_id,
+                                                                 destination_mailbox_id,
+                                                                 &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+bool HaikuShellHost::CopyMessage(std::string_view mailbox_id,
+                                 std::string_view message_id,
+                                 std::string_view destination_mailbox_id) {
+    std::string error_message;
+    const bool queued = transport_coordinator_->QueueCopyMessage(mailbox_id,
+                                                                 message_id,
+                                                                 destination_mailbox_id,
+                                                                 &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+bool HaikuShellHost::CreateRemoteMailbox(std::string_view account_id, std::string_view remote_name) {
+    std::string error_message;
+    const bool queued = transport_coordinator_->QueueCreateMailbox(account_id, remote_name, &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+bool HaikuShellHost::RenameRemoteMailbox(std::string_view mailbox_id, std::string_view new_remote_name) {
+    std::string error_message;
+    const bool queued = transport_coordinator_->QueueRenameMailbox(mailbox_id, new_remote_name, &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+bool HaikuShellHost::DeleteRemoteMailbox(std::string_view mailbox_id) {
+    std::string error_message;
+    const bool queued = transport_coordinator_->QueueDeleteMailbox(mailbox_id, &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+std::optional<std::filesystem::path> HaikuShellHost::AttachmentPath(std::string_view mailbox_id,
+                                                                    std::string_view message_id,
+                                                                    std::size_t attachment_index) const {
+    return message_store_->AttachmentPath(mailbox_id, message_id, attachment_index);
+}
+
+bool HaikuShellHost::SaveAttachment(std::string_view mailbox_id,
+                                    std::string_view message_id,
+                                    std::size_t attachment_index,
+                                    const std::filesystem::path& destination_path) {
+    const auto payload = message_store_->LoadAttachmentPayload(mailbox_id, message_id, attachment_index);
+    if (!payload) {
+        return false;
+    }
+    std::error_code create_error;
+    std::filesystem::create_directories(destination_path.parent_path(), create_error);
+    std::ofstream output(destination_path, std::ios::binary);
+    if (!output.is_open()) {
+        return false;
+    }
+    output.write(payload->data(), static_cast<std::streamsize>(payload->size()));
+    return static_cast<bool>(output);
+}
+
+bool HaikuShellHost::SaveAllAttachments(std::string_view mailbox_id,
+                                        std::string_view message_id,
+                                        const std::filesystem::path& destination_directory) {
+    const auto message = message_store_->GetMessage(mailbox_id, message_id);
+    if (!message) {
+        return false;
+    }
+    std::error_code create_error;
+    std::filesystem::create_directories(destination_directory, create_error);
+    if (create_error) {
+        return false;
+    }
+    for (std::size_t index = 0; index < message->attachments.size(); ++index) {
+        const auto filename =
+            message->attachments[index].name.empty() ? ("attachment-" + std::to_string(index)) : message->attachments[index].name;
+        if (!SaveAttachment(mailbox_id, message_id, index, destination_directory / filename)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool HaikuShellHost::FetchAttachment(std::string_view mailbox_id,
+                                     std::string_view message_id,
+                                     std::size_t attachment_index) {
+    std::string error_message;
+    const bool queued =
+        transport_coordinator_->QueueFetchAttachment(mailbox_id, message_id, attachment_index, &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+bool HaikuShellHost::FetchFullMessage(std::string_view mailbox_id, std::string_view message_id) {
+    std::string error_message;
+    const bool queued =
+        transport_coordinator_->QueueFetchFullMessage(mailbox_id, message_id, &error_message);
+    ReloadWorkspace();
+    return queued;
+}
+
+bool HaikuShellHost::RetryTask(std::string_view task_or_action_id) {
+    std::string error_message;
+    const bool retried = transport_coordinator_->RetryImapAction(task_or_action_id, &error_message);
+    ReloadWorkspace();
+    return retried;
+}
+
+bool HaikuShellHost::CancelTask(std::string_view task_or_action_id) {
+    std::string error_message;
+    const bool cancelled = transport_coordinator_->CancelImapAction(task_or_action_id, &error_message);
+    ReloadWorkspace();
+    return cancelled;
+}
+
 bool HaikuShellHost::StopActiveTasks() {
-    return false;
+    return transport_coordinator_->StopActiveTasks();
 }
 
 InMemoryWorkspaceModel& HaikuShellHost::Workspace() {
@@ -127,6 +279,10 @@ FilesystemCredentialStore& HaikuShellHost::Credentials() {
 
 FilesystemSyncStateStore& HaikuShellHost::SyncState() {
     return *sync_state_store_;
+}
+
+FilesystemImapActionStore& HaikuShellHost::ImapActions() {
+    return *imap_action_store_;
 }
 
 InMemoryMailTaskModel& HaikuShellHost::Tasks() {

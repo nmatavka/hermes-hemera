@@ -29,8 +29,7 @@ std::string HeaderValue(std::string_view line) {
     }
 
     std::size_t start = separator + 1;
-    while (start < line.size() &&
-           (line[start] == ' ' || line[start] == '\t')) {
+    while (start < line.size() && (line[start] == ' ' || line[start] == '\t')) {
         ++start;
     }
     return std::string(line.substr(start));
@@ -76,9 +75,52 @@ MessageDeliveryState DeliveryStateFromString(std::string value) {
     return MessageDeliveryState::kReceived;
 }
 
+std::string SanitizeFilename(std::string value) {
+    if (value.empty()) {
+        return "attachment.bin";
+    }
+    for (char& ch : value) {
+        const unsigned char uch = static_cast<unsigned char>(ch);
+        if (!(std::isalnum(uch) || ch == '.' || ch == '_' || ch == '-')) {
+            ch = '_';
+        }
+    }
+    return value;
+}
+
+std::filesystem::path AttachmentStoragePath(const std::filesystem::path& root,
+                                            std::string_view message_id,
+                                            std::size_t attachment_index,
+                                            std::string_view suggested_name) {
+    return root / "Attachments" / std::string(message_id) /
+           (std::to_string(attachment_index) + "-" + SanitizeFilename(std::string(suggested_name)));
+}
+
+std::optional<std::filesystem::path> ExistingAttachmentPath(const std::filesystem::path& root,
+                                                            std::string_view message_id,
+                                                            std::size_t attachment_index) {
+    const std::filesystem::path directory = root / "Attachments" / std::string(message_id);
+    if (!std::filesystem::exists(directory)) {
+        return std::nullopt;
+    }
+    const std::string prefix = std::to_string(attachment_index) + "-";
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const std::string filename = entry.path().filename().string();
+        if (filename.rfind(prefix, 0) == 0) {
+            return entry.path();
+        }
+    }
+    return std::nullopt;
+}
+
 std::string SerializeAttachment(const MessageAttachment& attachment) {
-    return attachment.name + '\t' + attachment.content_type + '\t' + std::to_string(attachment.size) + '\t' +
-           (attachment.omitted ? "1" : "0");
+    return attachment.name + '\t' + attachment.content_type + '\t' +
+           std::to_string(attachment.size) + '\t' + (attachment.omitted ? "1" : "0") + '\t' +
+           attachment.payload_path + '\t' + attachment.content_id + '\t' + attachment.disposition + '\t' +
+           (attachment.download_complete ? "1" : "0") + '\t' + attachment.fetch_error;
 }
 
 std::optional<MessageAttachment> ParseAttachment(std::string_view value) {
@@ -105,7 +147,53 @@ std::optional<MessageAttachment> ParseAttachment(std::string_view value) {
         attachment.size = 0;
     }
     attachment.omitted = parts[3] == "1";
+    if (parts.size() >= 5) {
+        attachment.payload_path = parts[4];
+    }
+    if (parts.size() >= 6) {
+        attachment.content_id = parts[5];
+    }
+    if (parts.size() >= 7) {
+        attachment.disposition = parts[6];
+    }
+    if (parts.size() >= 8) {
+        attachment.download_complete = parts[7] != "0";
+    }
+    if (parts.size() >= 9) {
+        attachment.fetch_error = parts[8];
+    }
     return attachment;
+}
+
+bool WriteBinaryFile(const std::filesystem::path& path,
+                     std::string_view contents,
+                     std::string* error_message) {
+    std::error_code create_error;
+    std::filesystem::create_directories(path.parent_path(), create_error);
+    if (create_error) {
+        if (error_message) {
+            *error_message = "Unable to create attachment directory: " + create_error.message();
+        }
+        return false;
+    }
+
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+        if (error_message) {
+            *error_message = "Unable to write attachment payload: " + path.string();
+        }
+        return false;
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    return static_cast<bool>(output);
+}
+
+std::optional<std::string> ReadBinaryFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        return std::nullopt;
+    }
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
 }  // namespace
@@ -125,6 +213,51 @@ bool FilesystemMessageStore::SaveMessage(const MessageRecord& message, std::stri
             *error_message = "Unable to create mailbox directory: " + create_error.message();
         }
         return false;
+    }
+
+    std::vector<MessageAttachment> attachments = message.attachments;
+    for (std::size_t index = 0; index < attachments.size(); ++index) {
+        auto& attachment = attachments[index];
+        const std::string suggested_name = attachment.name.empty() ? "attachment.bin" : attachment.name;
+        const std::filesystem::path managed_path =
+            AttachmentStoragePath(root_directory_, message.id, index, suggested_name);
+
+        if (!attachment.payload_path.empty()) {
+            const std::filesystem::path source_path = attachment.payload_path;
+            std::error_code exists_error;
+            if (std::filesystem::exists(source_path, exists_error) && !exists_error) {
+                std::error_code create_attachment_error;
+                std::filesystem::create_directories(managed_path.parent_path(), create_attachment_error);
+                if (create_attachment_error) {
+                    if (error_message) {
+                        *error_message = "Unable to create attachment directory: " +
+                                         create_attachment_error.message();
+                    }
+                    return false;
+                }
+                std::error_code copy_error;
+                if (source_path != managed_path) {
+                    std::filesystem::copy_file(source_path,
+                                               managed_path,
+                                               std::filesystem::copy_options::overwrite_existing,
+                                               copy_error);
+                    if (copy_error) {
+                        if (error_message) {
+                            *error_message = "Unable to import attachment payload: " + copy_error.message();
+                        }
+                        return false;
+                    }
+                }
+                attachment.payload_path = managed_path.string();
+            } else if (!attachment.omitted && attachment.download_complete) {
+                if (error_message) {
+                    *error_message = "Attachment payload is unavailable: " + source_path.string();
+                }
+                return false;
+            }
+        } else if (const auto existing = ExistingAttachmentPath(root_directory_, message.id, index)) {
+            attachment.payload_path = existing->string();
+        }
     }
 
     std::ofstream output(MessagePath(message.mailbox_id, message.id));
@@ -152,7 +285,7 @@ bool FilesystemMessageStore::SaveMessage(const MessageRecord& message, std::stri
     output << "X-Hermes-Created-At: " << message.created_at << '\n';
     output << "X-Hermes-Updated-At: " << message.updated_at << '\n';
     output << "X-Hermes-Unread: " << (message.unread ? "1" : "0") << '\n';
-    for (const auto& attachment : message.attachments) {
+    for (const auto& attachment : attachments) {
         output << "X-Hermes-Attachment: " << SerializeAttachment(attachment) << '\n';
     }
     output << '\n';
@@ -176,6 +309,13 @@ std::vector<MessageRecord> FilesystemMessageStore::ListMessages(std::string_view
         }
 
         if (auto record = ReadMessageFile(entry.path(), mailbox_id)) {
+            for (std::size_t index = 0; index < record->attachments.size(); ++index) {
+                if (record->attachments[index].payload_path.empty()) {
+                    if (const auto existing = ExistingAttachmentPath(root_directory_, record->id, index)) {
+                        record->attachments[index].payload_path = existing->string();
+                    }
+                }
+            }
             messages.push_back(std::move(*record));
         }
     }
@@ -190,7 +330,18 @@ std::vector<MessageRecord> FilesystemMessageStore::ListMessages(std::string_view
 
 std::optional<MessageRecord> FilesystemMessageStore::GetMessage(std::string_view mailbox_id,
                                                                 std::string_view message_id) const {
-    return ReadMessageFile(MessagePath(mailbox_id, message_id), mailbox_id);
+    auto record = ReadMessageFile(MessagePath(mailbox_id, message_id), mailbox_id);
+    if (!record) {
+        return std::nullopt;
+    }
+    for (std::size_t index = 0; index < record->attachments.size(); ++index) {
+        if (record->attachments[index].payload_path.empty()) {
+            if (const auto existing = ExistingAttachmentPath(root_directory_, record->id, index)) {
+                record->attachments[index].payload_path = existing->string();
+            }
+        }
+    }
+    return record;
 }
 
 bool FilesystemMessageStore::DeleteMessage(std::string_view mailbox_id,
@@ -202,6 +353,22 @@ bool FilesystemMessageStore::DeleteMessage(std::string_view mailbox_id,
         *error_message = "Unable to delete message: " + remove_error.message();
     }
     return removed || !remove_error;
+}
+
+bool FilesystemMessageStore::CopyMessage(std::string_view source_mailbox_id,
+                                         std::string_view message_id,
+                                         std::string_view destination_mailbox_id,
+                                         std::string* error_message) {
+    const auto source = GetMessage(source_mailbox_id, message_id);
+    if (!source) {
+        if (error_message) {
+            *error_message = "Unable to find message to copy.";
+        }
+        return false;
+    }
+    MessageRecord copied = *source;
+    copied.mailbox_id = std::string(destination_mailbox_id);
+    return SaveMessage(copied, error_message);
 }
 
 bool FilesystemMessageStore::MoveMessage(std::string_view source_mailbox_id,
@@ -226,18 +393,77 @@ bool FilesystemMessageStore::MoveMessage(std::string_view source_mailbox_id,
         return true;
     }
 
-    if (auto message = ReadMessageFile(source_path, source_mailbox_id)) {
-        message->mailbox_id = std::string(destination_mailbox_id);
-        if (!SaveMessage(*message, error_message)) {
-            return false;
-        }
-        return DeleteMessage(source_mailbox_id, message_id, error_message);
+    if (!CopyMessage(source_mailbox_id, message_id, destination_mailbox_id, error_message)) {
+        return false;
     }
+    return DeleteMessage(source_mailbox_id, message_id, error_message);
+}
 
-    if (error_message) {
-        *error_message = "Unable to move message: " + rename_error.message();
+bool FilesystemMessageStore::SaveAttachmentPayload(std::string_view mailbox_id,
+                                                   std::string_view message_id,
+                                                   std::size_t attachment_index,
+                                                   std::string_view suggested_name,
+                                                   std::string_view payload,
+                                                   std::string* error_message) {
+    (void)mailbox_id;
+    return WriteBinaryFile(AttachmentStoragePath(root_directory_,
+                                                 message_id,
+                                                 attachment_index,
+                                                 suggested_name.empty() ? "attachment.bin"
+                                                                        : std::string(suggested_name)),
+                           payload,
+                           error_message);
+}
+
+bool FilesystemMessageStore::ImportAttachmentFile(std::string_view mailbox_id,
+                                                  std::string_view message_id,
+                                                  std::size_t attachment_index,
+                                                  const std::filesystem::path& source_path,
+                                                  std::string* error_message) {
+    (void)mailbox_id;
+    if (source_path.empty()) {
+        if (error_message) {
+            *error_message = "Attachment source path must not be empty.";
+        }
+        return false;
     }
-    return false;
+    const auto destination =
+        AttachmentStoragePath(root_directory_, message_id, attachment_index, source_path.filename().string());
+    std::error_code create_error;
+    std::filesystem::create_directories(destination.parent_path(), create_error);
+    if (create_error) {
+        if (error_message) {
+            *error_message = "Unable to create attachment directory: " + create_error.message();
+        }
+        return false;
+    }
+    std::error_code copy_error;
+    std::filesystem::copy_file(source_path,
+                               destination,
+                               std::filesystem::copy_options::overwrite_existing,
+                               copy_error);
+    if (copy_error) {
+        if (error_message) {
+            *error_message = "Unable to import attachment payload: " + copy_error.message();
+        }
+        return false;
+    }
+    return true;
+}
+
+std::optional<std::string> FilesystemMessageStore::LoadAttachmentPayload(std::string_view mailbox_id,
+                                                                         std::string_view message_id,
+                                                                         std::size_t attachment_index) const {
+    (void)mailbox_id;
+    const auto path = AttachmentPath(mailbox_id, message_id, attachment_index);
+    return path ? ReadBinaryFile(*path) : std::nullopt;
+}
+
+std::optional<std::filesystem::path> FilesystemMessageStore::AttachmentPath(std::string_view mailbox_id,
+                                                                            std::string_view message_id,
+                                                                            std::size_t attachment_index) const {
+    (void)mailbox_id;
+    return ExistingAttachmentPath(root_directory_, message_id, attachment_index);
 }
 
 std::filesystem::path FilesystemMessageStore::MailboxDirectory(std::string_view mailbox_id) const {
@@ -247,6 +473,10 @@ std::filesystem::path FilesystemMessageStore::MailboxDirectory(std::string_view 
 std::filesystem::path FilesystemMessageStore::MessagePath(std::string_view mailbox_id,
                                                           std::string_view message_id) const {
     return MailboxDirectory(mailbox_id) / (std::string(message_id) + ".eml");
+}
+
+std::filesystem::path FilesystemMessageStore::AttachmentsDirectory(std::string_view message_id) const {
+    return root_directory_ / "Attachments" / std::string(message_id);
 }
 
 std::optional<MessageRecord> FilesystemMessageStore::ReadMessageFile(const std::filesystem::path& path,

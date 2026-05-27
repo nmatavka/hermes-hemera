@@ -1,6 +1,8 @@
 #include "hermes/DraftStore.h"
 
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <fstream>
 
 #include "hermes/IniSettingsStore.h"
@@ -128,6 +130,19 @@ std::string ReadFile(const std::filesystem::path& path) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+std::string SanitizeFilename(std::string value) {
+    if (value.empty()) {
+        return "attachment";
+    }
+    for (char& ch : value) {
+        const unsigned char uch = static_cast<unsigned char>(ch);
+        if (!(std::isalnum(uch) || ch == '.' || ch == '_' || ch == '-')) {
+            ch = '_';
+        }
+    }
+    return value;
+}
+
 }  // namespace
 
 FilesystemDraftStore::FilesystemDraftStore(std::filesystem::path root_directory)
@@ -171,7 +186,58 @@ bool FilesystemDraftStore::SaveDraft(const ComposeMessage& draft, std::string* e
     metadata.SetString("Headers", "Subject", draft.headers.subject);
     metadata.SetString("Headers", "FromPersona", draft.headers.from_persona);
     metadata.SetString("Headers", "ReplyTo", draft.headers.reply_to);
+    metadata.SetString("Attachments", "Count", std::to_string(draft.attachments.size()));
+    for (std::size_t index = 0; index < draft.attachments.size(); ++index) {
+        const auto& attachment = draft.attachments[index];
+        const std::string prefix = "Attachment" + std::to_string(index);
+        metadata.SetString("Attachments", prefix + "DisplayName", attachment.display_name);
+        metadata.SetString("Attachments", prefix + "MimeType", attachment.mime_type);
+        metadata.SetString("Attachments", prefix + "Size", std::to_string(attachment.size));
+        metadata.SetString("Attachments", prefix + "ContentId", attachment.content_id);
+        metadata.SetString("Attachments",
+                           prefix + "InlineDisposition",
+                           attachment.inline_disposition ? "1" : "0");
+    }
     WritePolicy(metadata, draft.policy);
+
+    const auto attachments_directory = AttachmentsDirectory(draft.id);
+    std::error_code remove_error;
+    std::filesystem::remove_all(attachments_directory, remove_error);
+    std::filesystem::create_directories(attachments_directory, create_error);
+    if (create_error) {
+        if (error_message) {
+            *error_message = "Unable to create draft attachments directory: " + create_error.message();
+        }
+        return false;
+    }
+
+    for (std::size_t index = 0; index < draft.attachments.size(); ++index) {
+        const auto& attachment = draft.attachments[index];
+        if (attachment.source_path.empty()) {
+            if (error_message) {
+                *error_message = "Draft attachment source path must not be empty.";
+            }
+            return false;
+        }
+        const std::filesystem::path stored_path =
+            attachments_directory /
+            (std::to_string(index) + "-" +
+             SanitizeFilename(attachment.display_name.empty() ? attachment.source_path.filename().string()
+                                                              : attachment.display_name));
+        std::error_code copy_error;
+        std::filesystem::copy_file(attachment.source_path,
+                                   stored_path,
+                                   std::filesystem::copy_options::overwrite_existing,
+                                   copy_error);
+        if (copy_error) {
+            if (error_message) {
+                *error_message = "Unable to persist draft attachment: " + copy_error.message();
+            }
+            return false;
+        }
+        const std::string prefix = "Attachment" + std::to_string(index);
+        metadata.SetString("Attachments", prefix + "SourcePath", stored_path.string());
+    }
 
     if (!metadata.SaveToFile(MetadataPath(draft.id), error_message)) {
         return false;
@@ -220,6 +286,24 @@ std::optional<ComposeMessage> FilesystemDraftStore::GetDraft(std::string_view dr
     draft.body.plain_text = ReadFile(PlainBodyPath(draft_id));
     draft.body.html_fragment = ReadFile(HtmlBodyPath(draft_id));
     draft.body.read_only = draft.policy.read_only;
+    const int attachment_count = metadata.GetInt("Attachments", "Count", 0);
+    for (int index = 0; index < attachment_count; ++index) {
+        const std::string prefix = "Attachment" + std::to_string(index);
+        ComposeAttachment attachment;
+        attachment.display_name =
+            metadata.GetString("Attachments", prefix + "DisplayName").value_or("");
+        attachment.source_path =
+            metadata.GetString("Attachments", prefix + "SourcePath").value_or("");
+        attachment.mime_type =
+            metadata.GetString("Attachments", prefix + "MimeType").value_or("");
+        attachment.size = static_cast<std::uint64_t>(
+            std::max(metadata.GetInt("Attachments", prefix + "Size", 0), 0));
+        attachment.content_id =
+            metadata.GetString("Attachments", prefix + "ContentId").value_or("");
+        attachment.inline_disposition =
+            metadata.GetBool("Attachments", prefix + "InlineDisposition", false);
+        draft.attachments.push_back(std::move(attachment));
+    }
     return draft;
 }
 
@@ -263,6 +347,10 @@ std::filesystem::path FilesystemDraftStore::PlainBodyPath(std::string_view draft
 
 std::filesystem::path FilesystemDraftStore::HtmlBodyPath(std::string_view draft_id) const {
     return DraftDirectory(draft_id) / "body.html";
+}
+
+std::filesystem::path FilesystemDraftStore::AttachmentsDirectory(std::string_view draft_id) const {
+    return DraftDirectory(draft_id) / "attachments";
 }
 
 }  // namespace hermes

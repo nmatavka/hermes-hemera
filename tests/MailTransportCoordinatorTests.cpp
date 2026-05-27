@@ -3,6 +3,7 @@
 
 #include "hermes/AccountService.h"
 #include "hermes/CredentialStore.h"
+#include "hermes/ImapActionStore.h"
 #include "hermes/MailTaskModel.h"
 #include "hermes/MailTransportCoordinator.h"
 #include "hermes/MailboxStore.h"
@@ -19,6 +20,7 @@
 #endif
 
 #include <atomic>
+#include <fstream>
 #include <thread>
 
 namespace {
@@ -274,6 +276,105 @@ HERMES_TEST(MailTransportCoordinatorSendsQueuedMailAndMovesItToSent) {
     server.join();
 }
 
+HERMES_TEST(MailTransportCoordinatorSendsQueuedMailWithAttachmentsAsMultipartMixed) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::string captured_message;
+    std::thread server([&]() {
+        const int client = ::accept(listener, nullptr, nullptr);
+        HERMES_CHECK(client >= 0);
+        WriteAll(client, "220 smtp.example.test ESMTP\r\n");
+        HERMES_CHECK(ReadLine(client).rfind("EHLO hermes-hemera", 0) == 0);
+        WriteAll(client, "250-localhost\r\n250-AUTH CRAM-MD5 PLAIN LOGIN\r\n250 OK\r\n");
+        HERMES_CHECK(ReadLine(client) == "AUTH CRAM-MD5");
+        WriteAll(client, "334 PDEyMzQ1QGV4YW1wbGUuY29tPg==\r\n");
+        HERMES_CHECK(!ReadLine(client).empty());
+        WriteAll(client, "235 Authentication successful\r\n");
+        HERMES_CHECK(ReadLine(client).rfind("MAIL FROM:<sender@example.com>", 0) == 0);
+        WriteAll(client, "250 Sender ok\r\n");
+        HERMES_CHECK(ReadLine(client).rfind("RCPT TO:<receiver@example.com>", 0) == 0);
+        WriteAll(client, "250 Recipient ok\r\n");
+        HERMES_CHECK(ReadLine(client) == "DATA");
+        WriteAll(client, "354 End with .\r\n");
+        captured_message = ReadUntilDot(client);
+        WriteAll(client, "250 Queued\r\n");
+        HERMES_CHECK(ReadLine(client) == "QUIT");
+        WriteAll(client, "221 Bye\r\n");
+        ::close(client);
+        ::close(listener);
+    });
+
+    hermes::AccountProfile account;
+    account.id = "primary";
+    account.display_name = "Primary";
+    account.login_name = "sender";
+    account.email_address = "sender@example.com";
+    account.outgoing_server = "127.0.0.1";
+    account.outgoing_port = port;
+    account.smtp_auth = hermes::SmtpAuthMode::kCramMd5;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::FilesystemSyncStateStore sync_store(hermes::tests::UniqueTempPath("hermes-sync-unused"));
+    hermes::tests::ScopedTempDirectory temp("hermes-smtp-attachments");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+
+    const auto attachment_path = temp.Path() / "report.txt";
+    {
+        std::ofstream output(attachment_path, std::ios::binary);
+        output << "payload-data";
+    }
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("primary", hermes::CredentialKind::kOutgoing, "smtp-pass",
+                                            &error_message));
+    HERMES_CHECK(mailbox_store.EnsureMailbox(
+        {"out", "Out", {}, "primary", hermes::MailboxProtocol::kSmtp, "", false, true, 0}, &error_message));
+
+    hermes::MessageRecord queued;
+    queued.id = "queued-attachment";
+    queued.mailbox_id = "out";
+    queued.account_id = "primary";
+    queued.subject = "Attachment transport";
+    queued.sender = "sender@example.com";
+    queued.recipients = "receiver@example.com";
+    queued.plain_text_body = "Plain body";
+    queued.html_body = "<p>Styled body</p>";
+    queued.delivery_state = hermes::MessageDeliveryState::kQueued;
+    queued.attachments.push_back({"report.txt",
+                                  "text/plain",
+                                  12,
+                                  false,
+                                  attachment_path.string(),
+                                  "cid-report",
+                                  "attachment",
+                                  true,
+                                  ""});
+    HERMES_CHECK(message_store.SaveMessage(queued, &error_message));
+
+    hermes::MailTransportCoordinator coordinator(
+        accounts, credentials, sync_store, mailbox_store, message_store, transport, tls_provider, tasks);
+    const auto summary = coordinator.SendQueued();
+    HERMES_CHECK(summary.success);
+    HERMES_CHECK_EQ(summary.messages_sent, static_cast<std::size_t>(1));
+    HERMES_CHECK(captured_message.find("Content-Type: multipart/mixed; boundary=\"hermes-mixed\"") !=
+                 std::string::npos);
+    HERMES_CHECK(captured_message.find("Content-Type: multipart/alternative; boundary=\"hermes-alternative\"") !=
+                 std::string::npos);
+    HERMES_CHECK(captured_message.find("Content-Disposition: attachment; filename=\"report.txt\"") !=
+                 std::string::npos);
+    HERMES_CHECK(captured_message.find("Content-ID: <cid-report>") != std::string::npos);
+    HERMES_CHECK(captured_message.find("cGF5bG9hZC1kYXRh") != std::string::npos);
+
+    server.join();
+}
+
 HERMES_TEST(MailTransportCoordinatorFetchesPopMailOnceUsingUidlState) {
     std::uint16_t port = 0;
     const int listener = CreateListener(&port);
@@ -434,6 +535,164 @@ HERMES_TEST(MailTransportCoordinatorDiscoversImapMailboxesAndDownloadsMessages) 
     HERMES_CHECK(static_cast<bool>(inbox_message));
     HERMES_CHECK_EQ(inbox_message->attachments.size(), static_cast<std::size_t>(1));
     HERMES_CHECK(inbox_message->attachments_omitted);
+
+    server.join();
+}
+
+HERMES_TEST(MailTransportCoordinatorReplaysQueuedImapAttachmentFetchWithPayloadDownload) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::thread server([&]() {
+        const int client = ::accept(listener, nullptr, nullptr);
+        HERMES_CHECK(client >= 0);
+        WriteAll(client, "* OK imap.example.test ready\r\n");
+        HERMES_CHECK(ReadLine(client).find("LOGIN") != std::string::npos);
+        WriteAll(client, "A1 OK LOGIN completed\r\n");
+        HERMES_CHECK(ReadLine(client).find("SELECT \"INBOX\"") != std::string::npos);
+        WriteAll(client, "* 1 EXISTS\r\n");
+        WriteAll(client, "* OK [UIDVALIDITY 777] UIDs valid\r\n");
+        WriteAll(client, "A2 OK [READ-WRITE] SELECT completed\r\n");
+        HERMES_CHECK(ReadLine(client).find("UID FETCH 42:42") != std::string::npos);
+        const std::string payload = MultipartFixtureMessage();
+        WriteAll(client, "* 1 FETCH (UID 42 FLAGS (\\Seen) BODY[] {" + std::to_string(payload.size()) + "}\r\n");
+        WriteAll(client, payload);
+        WriteAll(client, ")\r\n");
+        WriteAll(client, "A3 OK UID FETCH completed\r\n");
+        ::close(client);
+        ::close(listener);
+    });
+
+    hermes::AccountProfile account;
+    account.id = "imap";
+    account.display_name = "IMAP";
+    account.login_name = "imap-user";
+    account.incoming_server = "127.0.0.1";
+    account.incoming_port = port;
+    account.uses_imap = true;
+    account.check_mail_by_default = false;
+    account.imap_auth = hermes::ImapAuthMode::kPassword;
+    account.imap_omit_attachments = true;
+    account.imap_download_mode = hermes::ImapDownloadMode::kMinimalHeaders;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::tests::ScopedTempDirectory temp("hermes-imap-action-fetch");
+    hermes::FilesystemSyncStateStore sync_store(temp.Path() / "sync");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::FilesystemImapActionStore action_store(temp.Path() / "actions");
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("imap", hermes::CredentialKind::kIncoming, "imap-pass",
+                                            &error_message));
+    HERMES_CHECK(mailbox_store.EnsureMailbox(
+        {"imap:INBOX", "INBOX", {}, "imap", hermes::MailboxProtocol::kImap, "INBOX", true, false, 0},
+        &error_message));
+
+    hermes::MessageRecord placeholder;
+    placeholder.id = "imap-imap-imap-INBOX-42";
+    placeholder.mailbox_id = "imap:INBOX";
+    placeholder.account_id = "imap";
+    placeholder.remote_id = "42";
+    placeholder.remote_mailbox = "INBOX";
+    placeholder.subject = "Placeholder";
+    placeholder.attachments_omitted = true;
+    placeholder.download_complete = false;
+    placeholder.attachments.push_back({"report.pdf", "application/pdf", 7, true, "", "", "attachment", false, ""});
+    HERMES_CHECK(message_store.SaveMessage(placeholder, &error_message));
+
+    hermes::MailTransportCoordinator coordinator(
+        accounts, credentials, sync_store, mailbox_store, message_store, transport, tls_provider, tasks, &action_store);
+    HERMES_CHECK(coordinator.QueueFetchAttachment("imap:INBOX", "imap-imap-imap-INBOX-42", 0, &error_message));
+    HERMES_CHECK_EQ(action_store.ListActions().size(), static_cast<std::size_t>(1));
+
+    const auto summary = coordinator.CheckMail();
+    HERMES_CHECK(summary.success);
+    HERMES_CHECK(action_store.ListActions().empty());
+
+    const auto fetched = message_store.GetMessage("imap:INBOX", "imap-imap-imap-INBOX-42");
+    HERMES_CHECK(static_cast<bool>(fetched));
+    HERMES_CHECK_EQ(fetched->attachments.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK(!fetched->attachments_omitted);
+    HERMES_CHECK(!fetched->attachments.front().omitted);
+    HERMES_CHECK(fetched->attachments.front().download_complete);
+    HERMES_CHECK(message_store.LoadAttachmentPayload("imap:INBOX", "imap-imap-imap-INBOX-42", 0).has_value());
+
+    server.join();
+}
+
+HERMES_TEST(MailTransportCoordinatorReplaysQueuedImapMailboxRenameAfterOptimisticLocalRename) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::thread server([&]() {
+        const int client = ::accept(listener, nullptr, nullptr);
+        HERMES_CHECK(client >= 0);
+        WriteAll(client, "* OK imap.example.test ready\r\n");
+        HERMES_CHECK(ReadLine(client).find("LOGIN") != std::string::npos);
+        WriteAll(client, "A1 OK LOGIN completed\r\n");
+        HERMES_CHECK(ReadLine(client).find("RENAME \"Projects\" \"Archive\"") != std::string::npos);
+        WriteAll(client, "A2 OK RENAME completed\r\n");
+        ::close(client);
+        ::close(listener);
+    });
+
+    hermes::AccountProfile account;
+    account.id = "imap";
+    account.display_name = "IMAP";
+    account.login_name = "imap-user";
+    account.incoming_server = "127.0.0.1";
+    account.incoming_port = port;
+    account.uses_imap = true;
+    account.check_mail_by_default = false;
+    account.imap_auth = hermes::ImapAuthMode::kPassword;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::tests::ScopedTempDirectory temp("hermes-imap-rename");
+    hermes::FilesystemSyncStateStore sync_store(temp.Path() / "sync");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::FilesystemImapActionStore action_store(temp.Path() / "actions");
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("imap", hermes::CredentialKind::kIncoming, "imap-pass",
+                                            &error_message));
+    HERMES_CHECK(mailbox_store.EnsureMailbox(
+        {"imap:Projects", "Projects", {}, "imap", hermes::MailboxProtocol::kImap, "Projects", true, false, 0},
+        &error_message));
+
+    hermes::MessageRecord cached;
+    cached.id = "imap-imap-imap-Projects-7";
+    cached.mailbox_id = "imap:Projects";
+    cached.account_id = "imap";
+    cached.remote_id = "7";
+    cached.remote_mailbox = "Projects";
+    cached.subject = "Cached project mail";
+    HERMES_CHECK(message_store.SaveMessage(cached, &error_message));
+
+    hermes::MailTransportCoordinator coordinator(
+        accounts, credentials, sync_store, mailbox_store, message_store, transport, tls_provider, tasks, &action_store);
+    HERMES_CHECK(coordinator.QueueRenameMailbox("imap:Projects", "Archive", &error_message));
+    HERMES_CHECK(mailbox_store.GetMailbox("imap:Projects") == std::nullopt);
+    HERMES_CHECK(mailbox_store.GetMailbox("imap:Archive").has_value());
+    HERMES_CHECK(message_store.GetMessage("imap:Archive", "imap-imap-imap-Projects-7").has_value());
+
+    const auto summary = coordinator.CheckMail();
+    HERMES_CHECK(summary.success);
+    HERMES_CHECK(action_store.ListActions().empty());
+    HERMES_CHECK(mailbox_store.GetMailbox("imap:Archive").has_value());
+    HERMES_CHECK(mailbox_store.GetMailbox("imap:Projects") == std::nullopt);
+    HERMES_CHECK(message_store.GetMessage("imap:Archive", "imap-imap-imap-Projects-7").has_value());
 
     server.join();
 }

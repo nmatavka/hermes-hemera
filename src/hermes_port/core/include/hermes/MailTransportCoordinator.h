@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cstddef>
+#include <atomic>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "hermes/AccountService.h"
 #include "hermes/CredentialStore.h"
+#include "hermes/ImapActionStore.h"
 #include "hermes/MailTaskModel.h"
 #include "hermes/MailboxStore.h"
 #include "hermes/MessageStore.h"
@@ -32,11 +36,44 @@ public:
                              MessageStore& message_store,
                              TransportService& transport_service,
                              TlsProvider& tls_provider,
-                             MailTaskModel& task_model);
+                             MailTaskModel& task_model,
+                             ImapActionStore* imap_action_store = nullptr);
 
     MailTransportSummary SendQueued();
     MailTransportSummary CheckMail();
     MailTransportSummary SendAndReceive();
+    MailTransportSummary RefreshMailbox(std::string_view mailbox_id, bool full_resync);
+    bool QueueDeleteMessage(std::string_view mailbox_id,
+                            std::string_view message_id,
+                            std::string* error_message = nullptr);
+    bool QueueUndeleteMessage(std::string_view mailbox_id,
+                              std::string_view message_id,
+                              std::string* error_message = nullptr);
+    bool QueueMoveMessage(std::string_view mailbox_id,
+                          std::string_view message_id,
+                          std::string_view destination_mailbox_id,
+                          std::string* error_message = nullptr);
+    bool QueueCopyMessage(std::string_view mailbox_id,
+                          std::string_view message_id,
+                          std::string_view destination_mailbox_id,
+                          std::string* error_message = nullptr);
+    bool QueueCreateMailbox(std::string_view account_id,
+                            std::string_view remote_name,
+                            std::string* error_message = nullptr);
+    bool QueueRenameMailbox(std::string_view mailbox_id,
+                            std::string_view new_remote_name,
+                            std::string* error_message = nullptr);
+    bool QueueDeleteMailbox(std::string_view mailbox_id, std::string* error_message = nullptr);
+    bool QueueFetchAttachment(std::string_view mailbox_id,
+                              std::string_view message_id,
+                              std::size_t attachment_index,
+                              std::string* error_message = nullptr);
+    bool QueueFetchFullMessage(std::string_view mailbox_id,
+                               std::string_view message_id,
+                               std::string* error_message = nullptr);
+    bool RetryImapAction(std::string_view action_id, std::string* error_message = nullptr);
+    bool CancelImapAction(std::string_view action_id, std::string* error_message = nullptr);
+    bool StopActiveTasks();
 
 private:
     AccountService& account_service_;
@@ -47,6 +84,8 @@ private:
     TransportService& transport_service_;
     TlsProvider& tls_provider_;
     MailTaskModel& task_model_;
+    ImapActionStore* imap_action_store_ = nullptr;
+    std::atomic<bool> stop_requested_{false};
 };
 
 }  // namespace hermes

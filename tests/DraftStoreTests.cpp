@@ -1,6 +1,8 @@
 #include "TestPaths.h"
 #include "TestRegistry.h"
 
+#include <fstream>
+
 #include "hermes/DraftStore.h"
 
 HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
@@ -45,4 +47,29 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
     const auto drafts = store.ListDrafts();
     HERMES_CHECK_EQ(drafts.size(), static_cast<std::size_t>(1));
     HERMES_CHECK_EQ(drafts.front().id, std::string("draft-001"));
+}
+
+HERMES_TEST(FilesystemDraftStoreRoundTripsAttachmentCopies) {
+    hermes::tests::ScopedTempDirectory temp("hermes-draft-attachments");
+    hermes::FilesystemDraftStore store(temp.Path());
+
+    const auto source_attachment = temp.Path() / "brief.txt";
+    {
+        std::ofstream output(source_attachment);
+        output << "Quarterly brief";
+    }
+
+    hermes::ComposeMessage draft;
+    draft.id = "draft-attachment";
+    draft.body.plain_text = "See attachment.";
+    draft.attachments.push_back({"brief.txt", source_attachment, "text/plain", 15, "cid-1", false});
+
+    std::string error_message;
+    HERMES_CHECK(store.SaveDraft(draft, &error_message));
+
+    const auto loaded = store.GetDraft("draft-attachment");
+    HERMES_CHECK(static_cast<bool>(loaded));
+    HERMES_CHECK_EQ(loaded->attachments.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK_EQ(loaded->attachments.front().display_name, std::string("brief.txt"));
+    HERMES_CHECK(std::filesystem::exists(loaded->attachments.front().source_path));
 }

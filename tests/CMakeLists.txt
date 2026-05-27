@@ -29,6 +29,7 @@ add_executable(
     TestMain.cpp
     RendererModeTests.cpp
     IniSettingsStoreTests.cpp
+    ImapActionStoreTests.cpp
     MailStoreTests.cpp
     MailTransportCoordinatorTests.cpp
     MoodWatchAnalyzerTests.cpp
