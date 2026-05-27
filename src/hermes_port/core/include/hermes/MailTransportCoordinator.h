@@ -18,6 +18,8 @@
 
 namespace hermes {
 
+class GssapiEngine;
+
 struct MailTransportSummary {
     bool success = false;
     std::size_t messages_sent = 0;
@@ -37,7 +39,8 @@ public:
                              TransportService& transport_service,
                              TlsProvider& tls_provider,
                              MailTaskModel& task_model,
-                             ImapActionStore* imap_action_store = nullptr);
+                             ImapActionStore* imap_action_store = nullptr,
+                             const GssapiEngine* gssapi_engine = nullptr);
 
     MailTransportSummary SendQueued();
     MailTransportSummary CheckMail();
@@ -85,6 +88,7 @@ private:
     TlsProvider& tls_provider_;
     MailTaskModel& task_model_;
     ImapActionStore* imap_action_store_ = nullptr;
+    const GssapiEngine* gssapi_engine_ = nullptr;
     std::atomic<bool> stop_requested_{false};
 };
 

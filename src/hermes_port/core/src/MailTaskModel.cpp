@@ -4,6 +4,30 @@
 
 namespace hermes {
 
+std::string ToString(MailTaskErrorKind kind) {
+    switch (kind) {
+        case MailTaskErrorKind::kUnknown:
+            return "unknown";
+        case MailTaskErrorKind::kUnsupportedMechanism:
+            return "unsupported-mechanism";
+        case MailTaskErrorKind::kCredentialRejected:
+            return "credential-rejected";
+        case MailTaskErrorKind::kCredentialAcquisitionFailed:
+            return "credential-acquisition-failed";
+        case MailTaskErrorKind::kHandshakeFailed:
+            return "handshake-failed";
+        case MailTaskErrorKind::kServerRejected:
+            return "server-rejected";
+        case MailTaskErrorKind::kTlsRequired:
+            return "tls-required";
+        case MailTaskErrorKind::kKerberosUnavailable:
+            return "kerberos-unavailable";
+        case MailTaskErrorKind::kServicePrincipalFailure:
+            return "service-principal-failure";
+    }
+    return "unknown";
+}
+
 void InMemoryMailTaskModel::UpsertTask(const MailTaskRecord& task) {
     const auto it =
         std::find_if(tasks_.begin(), tasks_.end(), [&](const MailTaskRecord& candidate) { return candidate.id == task.id; });
@@ -28,7 +52,9 @@ bool InMemoryMailTaskModel::CompleteTask(std::string_view task_id, std::string_v
 
 bool InMemoryMailTaskModel::FailTask(std::string_view task_id,
                                      std::string_view status,
-                                     std::string_view error_message) {
+                                     std::string_view error_message,
+                                     MailTaskErrorKind kind,
+                                     std::string_view mechanism) {
     const auto it =
         std::find_if(tasks_.begin(), tasks_.end(), [&](const MailTaskRecord& task) { return task.id == task_id; });
     if (it == tasks_.end()) {
@@ -36,7 +62,7 @@ bool InMemoryMailTaskModel::FailTask(std::string_view task_id,
     }
     it->state = MailTaskState::kFailed;
     it->status = std::string(status);
-    errors_.push_back({std::string(task_id), std::string(error_message)});
+    errors_.push_back({std::string(task_id), kind, std::string(mechanism), std::string(error_message)});
     return true;
 }
 

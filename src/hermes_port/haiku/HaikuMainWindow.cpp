@@ -733,7 +733,12 @@ void HaikuMainWindow::PopulateTaskStatus() {
 
     std::vector<std::string> errors;
     for (const auto& error : shell_host_.Tasks().Errors()) {
-        errors.push_back(error.task_id + ": " + error.message);
+        std::string row = error.task_id + " [" + ToString(error.kind);
+        if (!error.mechanism.empty()) {
+            row += "/" + error.mechanism;
+        }
+        row += "]: " + error.message;
+        errors.push_back(std::move(row));
     }
     for (const auto& action : shell_host_.QueuedImapActions()) {
         if (!action.last_error.empty()) {

@@ -75,35 +75,103 @@ if(HUNSPELL_INCLUDE_DIR AND HUNSPELL_LIBRARY)
 endif()
 
 set(HERMES_HAS_KRB5 0)
+set(HERMES_KRB5_HEADERS_FROM_ROOT 0)
+set(HERMES_GSSAPI_LIBRARY_FROM_ROOT 0)
+set(HERMES_KRB5_LIBRARY_FROM_ROOT 0)
+
 find_path(
     HERMES_KRB5_INCLUDE_DIR
     NAMES krb5.h
     HINTS
         "${HERMES_KRB5_ROOT}/src/include"
         "${HERMES_KRB5_ROOT}/include"
+    NO_DEFAULT_PATH
 )
+if(HERMES_KRB5_INCLUDE_DIR)
+    set(HERMES_KRB5_HEADERS_FROM_ROOT 1)
+else()
+    find_path(
+        HERMES_KRB5_INCLUDE_DIR
+        NAMES krb5.h
+        HINTS
+            "${HERMES_KRB5_ROOT}/src/include"
+            "${HERMES_KRB5_ROOT}/include"
+    )
+endif()
+
 find_path(
     HERMES_GSSAPI_INCLUDE_DIR
     NAMES gssapi/gssapi.h
     HINTS
         "${HERMES_KRB5_ROOT}/src/include"
         "${HERMES_KRB5_ROOT}/include"
+    NO_DEFAULT_PATH
 )
+if(NOT HERMES_GSSAPI_INCLUDE_DIR)
+    find_path(
+        HERMES_GSSAPI_INCLUDE_DIR
+        NAMES gssapi/gssapi.h
+        HINTS
+            "${HERMES_KRB5_ROOT}/src/include"
+            "${HERMES_KRB5_ROOT}/include"
+    )
+endif()
+
 find_library(
     HERMES_GSSAPI_LIBRARY
     NAMES gssapi_krb5 gssapi
+    HINTS
+        "${HERMES_KRB5_ROOT}/lib"
+        "${HERMES_KRB5_ROOT}/src/lib"
+        "${HERMES_KRB5_ROOT}/build/lib"
+        "${HERMES_KRB5_ROOT}/build/src/lib"
+    NO_DEFAULT_PATH
 )
+if(HERMES_GSSAPI_LIBRARY)
+    set(HERMES_GSSAPI_LIBRARY_FROM_ROOT 1)
+else()
+    find_library(
+        HERMES_GSSAPI_LIBRARY
+        NAMES gssapi_krb5 gssapi
+    )
+endif()
+
 find_library(
     HERMES_KRB5_LIBRARY
     NAMES krb5
+    HINTS
+        "${HERMES_KRB5_ROOT}/lib"
+        "${HERMES_KRB5_ROOT}/src/lib"
+        "${HERMES_KRB5_ROOT}/build/lib"
+        "${HERMES_KRB5_ROOT}/build/src/lib"
+    NO_DEFAULT_PATH
 )
+if(HERMES_KRB5_LIBRARY)
+    set(HERMES_KRB5_LIBRARY_FROM_ROOT 1)
+else()
+    find_library(
+        HERMES_KRB5_LIBRARY
+        NAMES krb5
+    )
+endif()
+
 find_library(
     HERMES_K5CRYPTO_LIBRARY
     NAMES k5crypto
+    HINTS
+        "${HERMES_KRB5_ROOT}/lib"
+        "${HERMES_KRB5_ROOT}/src/lib"
+        "${HERMES_KRB5_ROOT}/build/lib"
+        "${HERMES_KRB5_ROOT}/build/src/lib"
 )
 find_library(
     HERMES_COMERR_LIBRARY
     NAMES com_err
+    HINTS
+        "${HERMES_KRB5_ROOT}/lib"
+        "${HERMES_KRB5_ROOT}/src/lib"
+        "${HERMES_KRB5_ROOT}/build/lib"
+        "${HERMES_KRB5_ROOT}/build/src/lib"
 )
 find_library(
     HERMES_GSS_FRAMEWORK
@@ -167,6 +235,9 @@ target_compile_definitions(
         HERMES_HAS_OPENSSL=${HERMES_HAS_OPENSSL}
         HERMES_HAS_HUNSPELL=${HERMES_HAS_HUNSPELL}
         HERMES_HAS_KRB5=${HERMES_HAS_KRB5}
+        HERMES_KRB5_HEADERS_FROM_ROOT=${HERMES_KRB5_HEADERS_FROM_ROOT}
+        HERMES_GSSAPI_LIBRARY_FROM_ROOT=${HERMES_GSSAPI_LIBRARY_FROM_ROOT}
+        HERMES_KRB5_LIBRARY_FROM_ROOT=${HERMES_KRB5_LIBRARY_FROM_ROOT}
 )
 
 message(STATUS "Hermes Haiku Port: HAIKU=${HERMES_IS_HAIKU} PAIGE=${HERMES_HAS_PAIGE} OPENSSL=${HERMES_HAS_OPENSSL} HUNSPELL=${HERMES_HAS_HUNSPELL} KRB5=${HERMES_HAS_KRB5}")

@@ -3,6 +3,7 @@
 
 #include "hermes/AccountService.h"
 #include "hermes/CredentialStore.h"
+#include "hermes/GssapiAuthenticator.h"
 #include "hermes/ImapActionStore.h"
 #include "hermes/MailTaskModel.h"
 #include "hermes/MailTransportCoordinator.h"
@@ -20,6 +21,8 @@
 #endif
 
 #include <atomic>
+#include <exception>
+#include <filesystem>
 #include <fstream>
 #include <thread>
 
@@ -137,6 +140,186 @@ std::string MultipartFixtureMessage() {
            "--mix--\r\n";
 }
 
+std::string Base64Encode(const std::string& input) {
+    static constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    std::string encoded;
+    encoded.reserve(((input.size() + 2) / 3) * 4);
+
+    int val = 0;
+    int valb = -6;
+    for (unsigned char ch : input) {
+        val = (val << 8) + ch;
+        valb += 8;
+        while (valb >= 0) {
+            encoded.push_back(kAlphabet[(val >> valb) & 0x3F]);
+            valb -= 6;
+        }
+    }
+    if (valb > -6) {
+        encoded.push_back(kAlphabet[((val << 8) >> (valb + 8)) & 0x3F]);
+    }
+    while (encoded.size() % 4 != 0) {
+        encoded.push_back('=');
+    }
+    return encoded;
+}
+
+class FakeGssapiConversation final : public hermes::GssapiConversation {
+public:
+    struct Config {
+        std::vector<hermes::GssapiStepResult> steps;
+        std::vector<std::string> expected_inputs;
+        std::string unwrap_output = std::string("\1\0\0\0", 4);
+        std::string wrap_output = "wrapped-final";
+        hermes::MailTaskErrorKind step_failure_kind = hermes::MailTaskErrorKind::kHandshakeFailed;
+        std::string step_failure_message = "GSSAPI step failed.";
+        hermes::MailTaskErrorKind unwrap_failure_kind = hermes::MailTaskErrorKind::kHandshakeFailed;
+        std::string unwrap_failure_message = "GSSAPI unwrap failed.";
+        hermes::MailTaskErrorKind wrap_failure_kind = hermes::MailTaskErrorKind::kHandshakeFailed;
+        std::string wrap_failure_message = "GSSAPI wrap failed.";
+        int fail_step_index = -1;
+        bool fail_unwrap = false;
+        bool fail_wrap = false;
+    };
+
+    explicit FakeGssapiConversation(Config config) : config_(std::move(config)) {}
+
+    bool Step(std::string_view input_token,
+              hermes::GssapiStepResult* result,
+              hermes::MailTaskErrorKind* error_kind,
+              std::string* error_message) override {
+        step_inputs_.push_back(std::string(input_token));
+        if (step_index_ < config_.expected_inputs.size() &&
+            config_.expected_inputs[step_index_] != input_token) {
+            if (error_kind) {
+                *error_kind = hermes::MailTaskErrorKind::kHandshakeFailed;
+            }
+            if (error_message) {
+                *error_message = "Unexpected GSSAPI input token.";
+            }
+            return false;
+        }
+        if (config_.fail_step_index >= 0 && static_cast<int>(step_index_) == config_.fail_step_index) {
+            if (error_kind) {
+                *error_kind = config_.step_failure_kind;
+            }
+            if (error_message) {
+                *error_message = config_.step_failure_message;
+            }
+            return false;
+        }
+        if (step_index_ >= config_.steps.size()) {
+            if (error_kind) {
+                *error_kind = hermes::MailTaskErrorKind::kHandshakeFailed;
+            }
+            if (error_message) {
+                *error_message = "Unexpected extra GSSAPI step.";
+            }
+            return false;
+        }
+        if (result) {
+            *result = config_.steps[step_index_];
+        }
+        ++step_index_;
+        return true;
+    }
+
+    bool Unwrap(std::string_view input_token,
+                std::string* output_token,
+                hermes::MailTaskErrorKind* error_kind,
+                std::string* error_message) override {
+        unwrap_inputs_.push_back(std::string(input_token));
+        if (config_.fail_unwrap) {
+            if (error_kind) {
+                *error_kind = config_.unwrap_failure_kind;
+            }
+            if (error_message) {
+                *error_message = config_.unwrap_failure_message;
+            }
+            return false;
+        }
+        if (output_token) {
+            *output_token = config_.unwrap_output;
+        }
+        return true;
+    }
+
+    bool Wrap(std::string_view input_token,
+              std::string* output_token,
+              hermes::MailTaskErrorKind* error_kind,
+              std::string* error_message) override {
+        wrap_inputs_.push_back(std::string(input_token));
+        if (config_.fail_wrap) {
+            if (error_kind) {
+                *error_kind = config_.wrap_failure_kind;
+            }
+            if (error_message) {
+                *error_message = config_.wrap_failure_message;
+            }
+            return false;
+        }
+        if (output_token) {
+            *output_token = config_.wrap_output;
+        }
+        return true;
+    }
+
+    const std::vector<std::string>& StepInputs() const { return step_inputs_; }
+
+private:
+    Config config_;
+    std::size_t step_index_ = 0;
+    std::vector<std::string> step_inputs_;
+    std::vector<std::string> unwrap_inputs_;
+    std::vector<std::string> wrap_inputs_;
+};
+
+class FakeGssapiEngine final : public hermes::GssapiEngine {
+public:
+    FakeGssapiConversation::Config config;
+    bool available = true;
+    hermes::MailTaskErrorKind unavailable_kind = hermes::MailTaskErrorKind::kKerberosUnavailable;
+    std::string unavailable_message = "Kerberos support is unavailable in this build.";
+    bool fail_create = false;
+    hermes::MailTaskErrorKind create_failure_kind = hermes::MailTaskErrorKind::kServicePrincipalFailure;
+    std::string create_failure_message = "Service principal creation failed.";
+    mutable std::vector<std::string> principals;
+    mutable std::size_t create_count = 0;
+
+    bool IsAvailable(hermes::MailTaskErrorKind* error_kind, std::string* error_message) const override {
+        if (available) {
+            return true;
+        }
+        if (error_kind) {
+            *error_kind = unavailable_kind;
+        }
+        if (error_message) {
+            *error_message = unavailable_message;
+        }
+        return false;
+    }
+
+    std::unique_ptr<hermes::GssapiConversation> CreateConversation(
+        std::string_view service_principal,
+        hermes::MailTaskErrorKind* error_kind,
+        std::string* error_message) const override {
+        principals.push_back(std::string(service_principal));
+        if (fail_create) {
+            if (error_kind) {
+                *error_kind = create_failure_kind;
+            }
+            if (error_message) {
+                *error_message = create_failure_message;
+            }
+            return nullptr;
+        }
+        ++create_count;
+        return std::make_unique<FakeGssapiConversation>(config);
+    }
+};
+
 #endif
 
 }  // namespace
@@ -186,12 +369,28 @@ HERMES_TEST(InMemoryMailTaskModelTracksFailures) {
     hermes::InMemoryMailTaskModel tasks;
     tasks.UpsertTask({"task-1", "Primary", "Check mail", "Running", "Details", hermes::MailTaskKind::kReceiving,
                       hermes::MailTaskState::kRunning, 10, 2, true});
-    HERMES_CHECK(tasks.FailTask("task-1", "Failed", "Bad password"));
+    HERMES_CHECK(tasks.FailTask("task-1",
+                                "Failed",
+                                "Bad password",
+                                hermes::MailTaskErrorKind::kCredentialRejected,
+                                "LOGIN"));
     const auto all_tasks = tasks.Tasks();
     const auto errors = tasks.Errors();
     HERMES_CHECK_EQ(all_tasks.size(), static_cast<std::size_t>(1));
     HERMES_CHECK_EQ(errors.size(), static_cast<std::size_t>(1));
     HERMES_CHECK_EQ(errors.front().message, std::string("Bad password"));
+    HERMES_CHECK_EQ(errors.front().kind, hermes::MailTaskErrorKind::kCredentialRejected);
+    HERMES_CHECK_EQ(errors.front().mechanism, std::string("LOGIN"));
+}
+
+HERMES_TEST(Krb5HeadersPreferProjectRootWhenAvailable) {
+    const std::filesystem::path krb5_header =
+        std::filesystem::path(HERMES_SOURCE_ROOT) / "third_party" / "krb5" / "src" / "include" / "krb5.h";
+    if (std::filesystem::exists(krb5_header)) {
+        HERMES_CHECK_EQ(HERMES_KRB5_HEADERS_FROM_ROOT, 1);
+    } else {
+        HERMES_CHECK_EQ(HERMES_KRB5_HEADERS_FROM_ROOT, 0);
+    }
 }
 
 #if !defined(_WIN32)
@@ -817,6 +1016,471 @@ HERMES_TEST(MailTransportCoordinatorRetriesAndCancelsPersistedImapActions) {
     const auto cancelled = action_store.GetAction("action-1");
     HERMES_CHECK(static_cast<bool>(cancelled));
     HERMES_CHECK_EQ(cancelled->state, hermes::ImapActionState::kCancelled);
+}
+
+HERMES_TEST(MailTransportCoordinatorUsesSharedKerberosHelperForPopAndHonorsKerberosPortOverride) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::exception_ptr server_failure;
+    std::thread server([&]() {
+        try {
+            const int client = ::accept(listener, nullptr, nullptr);
+            HERMES_CHECK(client >= 0);
+            WriteAll(client, "+OK pop.example.test ready\r\n");
+            HERMES_CHECK(ReadLine(client) == "AUTH GSSAPI");
+            WriteAll(client, "+ " + Base64Encode("server-1") + "\r\n");
+            HERMES_CHECK(ReadLine(client) == Base64Encode("client-1"));
+            WriteAll(client, "+ " + Base64Encode("server-2") + "\r\n");
+            HERMES_CHECK(ReadLine(client) == Base64Encode("client-2"));
+            WriteAll(client, "+ " + Base64Encode(std::string("\1\0\0\0", 4)) + "\r\n");
+            HERMES_CHECK(ReadLine(client) == Base64Encode("wrapped-final"));
+            WriteAll(client, "+OK GSSAPI complete\r\n");
+            HERMES_CHECK(ReadLine(client) == "UIDL");
+            WriteAll(client, "+OK uidl\r\n.\r\n");
+            HERMES_CHECK(ReadLine(client) == "LIST");
+            WriteAll(client, "+OK list\r\n.\r\n");
+            HERMES_CHECK(ReadLine(client) == "QUIT");
+            WriteAll(client, "+OK bye\r\n");
+            ::close(client);
+            ::close(listener);
+        } catch (...) {
+            server_failure = std::current_exception();
+        }
+    });
+
+    hermes::AccountProfile account;
+    account.id = "pop-krb";
+    account.display_name = "POP Kerberos";
+    account.login_name = "pop-user";
+    account.incoming_server = "127.0.0.1";
+    account.incoming_port = static_cast<std::uint16_t>(port + 1);
+    account.uses_pop = true;
+    account.check_mail_by_default = true;
+    account.pop_auth = hermes::PopAuthMode::kKerberos;
+    account.kerberos.service_name = "pop";
+    account.kerberos.realm = "EXAMPLE.TEST";
+    account.kerberos.service_format = "%s/%h@%r";
+    account.kerberos.pop_port = port;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::tests::ScopedTempDirectory temp("hermes-pop-kerberos");
+    hermes::FilesystemSyncStateStore sync_store(temp.Path() / "sync");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+    FakeGssapiEngine fake_engine;
+    fake_engine.config.expected_inputs = {"server-1", "server-2"};
+    fake_engine.config.steps = {{true, "client-1"}, {false, "client-2"}};
+    fake_engine.config.wrap_output = "wrapped-final";
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("pop-krb", hermes::CredentialKind::kIncoming, "krb-pass",
+                                            &error_message));
+
+    hermes::MailTransportCoordinator coordinator(accounts,
+                                                 credentials,
+                                                 sync_store,
+                                                 mailbox_store,
+                                                 message_store,
+                                                 transport,
+                                                 tls_provider,
+                                                 tasks,
+                                                 nullptr,
+                                                 &fake_engine);
+    const auto summary = coordinator.CheckMail();
+    server.join();
+    if (server_failure) {
+        std::rethrow_exception(server_failure);
+    }
+
+    HERMES_CHECK(summary.success);
+    HERMES_CHECK_EQ(summary.messages_received, static_cast<std::size_t>(0));
+    HERMES_CHECK(tasks.Errors().empty());
+    HERMES_CHECK_EQ(fake_engine.principals.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK_EQ(fake_engine.principals.front(), std::string("pop/127.0.0.1@EXAMPLE.TEST"));
+}
+
+HERMES_TEST(MailTransportCoordinatorClassifiesPopKerberosServerRejection) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::exception_ptr server_failure;
+    std::thread server([&]() {
+        try {
+            const int client = ::accept(listener, nullptr, nullptr);
+            HERMES_CHECK(client >= 0);
+            WriteAll(client, "+OK pop.example.test ready\r\n");
+            HERMES_CHECK(ReadLine(client) == "AUTH GSSAPI");
+            WriteAll(client, "+ " + Base64Encode("server-1") + "\r\n");
+            HERMES_CHECK(ReadLine(client) == Base64Encode("client-1"));
+            WriteAll(client, "+ " + Base64Encode("server-2") + "\r\n");
+            HERMES_CHECK(ReadLine(client) == Base64Encode("client-2"));
+            WriteAll(client, "+ " + Base64Encode(std::string("\1\0\0\0", 4)) + "\r\n");
+            HERMES_CHECK(ReadLine(client) == Base64Encode("wrapped-final"));
+            WriteAll(client, "-ERR rejected\r\n");
+            ::close(client);
+            ::close(listener);
+        } catch (...) {
+            server_failure = std::current_exception();
+        }
+    });
+
+    hermes::AccountProfile account;
+    account.id = "pop-krb";
+    account.display_name = "POP Kerberos";
+    account.login_name = "pop-user";
+    account.incoming_server = "127.0.0.1";
+    account.incoming_port = port;
+    account.uses_pop = true;
+    account.check_mail_by_default = true;
+    account.pop_auth = hermes::PopAuthMode::kKerberos;
+    account.kerberos.pop_port = port;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::tests::ScopedTempDirectory temp("hermes-pop-kerberos-reject");
+    hermes::FilesystemSyncStateStore sync_store(temp.Path() / "sync");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+    FakeGssapiEngine fake_engine;
+    fake_engine.config.expected_inputs = {"server-1", "server-2"};
+    fake_engine.config.steps = {{true, "client-1"}, {false, "client-2"}};
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("pop-krb", hermes::CredentialKind::kIncoming, "krb-pass",
+                                            &error_message));
+
+    hermes::MailTransportCoordinator coordinator(accounts,
+                                                 credentials,
+                                                 sync_store,
+                                                 mailbox_store,
+                                                 message_store,
+                                                 transport,
+                                                 tls_provider,
+                                                 tasks,
+                                                 nullptr,
+                                                 &fake_engine);
+    const auto summary = coordinator.CheckMail();
+    server.join();
+    if (server_failure) {
+        std::rethrow_exception(server_failure);
+    }
+
+    HERMES_CHECK(summary.warnings.size() == 1);
+    const auto errors = tasks.Errors();
+    HERMES_CHECK_EQ(errors.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK_EQ(errors.front().kind, hermes::MailTaskErrorKind::kServerRejected);
+    HERMES_CHECK_EQ(errors.front().mechanism, std::string("GSSAPI"));
+    HERMES_CHECK(errors.front().message.find("POP GSSAPI authentication failed") != std::string::npos);
+}
+
+HERMES_TEST(MailTransportCoordinatorClassifiesKerberosUnavailableWithoutFallback) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::exception_ptr server_failure;
+    std::thread server([&]() {
+        try {
+            const int client = ::accept(listener, nullptr, nullptr);
+            HERMES_CHECK(client >= 0);
+            WriteAll(client, "+OK pop.example.test ready\r\n");
+            HERMES_CHECK(ReadLine(client) == "AUTH GSSAPI");
+            HERMES_CHECK(ReadLine(client).empty());
+            ::close(client);
+            ::close(listener);
+        } catch (...) {
+            server_failure = std::current_exception();
+        }
+    });
+
+    hermes::AccountProfile account;
+    account.id = "pop-krb";
+    account.display_name = "POP Kerberos";
+    account.login_name = "pop-user";
+    account.incoming_server = "127.0.0.1";
+    account.incoming_port = port;
+    account.uses_pop = true;
+    account.check_mail_by_default = true;
+    account.pop_auth = hermes::PopAuthMode::kKerberos;
+    account.kerberos.pop_port = port;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::tests::ScopedTempDirectory temp("hermes-pop-kerberos-unavailable");
+    hermes::FilesystemSyncStateStore sync_store(temp.Path() / "sync");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+    FakeGssapiEngine fake_engine;
+    fake_engine.available = false;
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("pop-krb", hermes::CredentialKind::kIncoming, "krb-pass",
+                                            &error_message));
+
+    hermes::MailTransportCoordinator coordinator(accounts,
+                                                 credentials,
+                                                 sync_store,
+                                                 mailbox_store,
+                                                 message_store,
+                                                 transport,
+                                                 tls_provider,
+                                                 tasks,
+                                                 nullptr,
+                                                 &fake_engine);
+    coordinator.CheckMail();
+    server.join();
+    if (server_failure) {
+        std::rethrow_exception(server_failure);
+    }
+
+    const auto errors = tasks.Errors();
+    HERMES_CHECK_EQ(errors.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK_EQ(errors.front().kind, hermes::MailTaskErrorKind::kKerberosUnavailable);
+    HERMES_CHECK_EQ(errors.front().mechanism, std::string("GSSAPI"));
+    HERMES_CHECK(errors.front().message.find("Kerberos support is unavailable") != std::string::npos);
+}
+
+HERMES_TEST(MailTransportCoordinatorDoesNotFallbackWhenRpaIsSelected) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::exception_ptr server_failure;
+    std::thread server([&]() {
+        try {
+            const int client = ::accept(listener, nullptr, nullptr);
+            HERMES_CHECK(client >= 0);
+            WriteAll(client, "+OK pop.example.test ready\r\n");
+            const std::string first_line = ReadLine(client);
+            HERMES_CHECK(first_line.empty());
+            ::close(client);
+            ::close(listener);
+        } catch (...) {
+            server_failure = std::current_exception();
+        }
+    });
+
+    hermes::AccountProfile account;
+    account.id = "pop-rpa";
+    account.display_name = "POP RPA";
+    account.login_name = "pop-user";
+    account.incoming_server = "127.0.0.1";
+    account.incoming_port = port;
+    account.uses_pop = true;
+    account.check_mail_by_default = true;
+    account.pop_auth = hermes::PopAuthMode::kRPA;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::tests::ScopedTempDirectory temp("hermes-pop-rpa");
+    hermes::FilesystemSyncStateStore sync_store(temp.Path() / "sync");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("pop-rpa", hermes::CredentialKind::kIncoming, "rpa-pass",
+                                            &error_message));
+
+    hermes::MailTransportCoordinator coordinator(
+        accounts, credentials, sync_store, mailbox_store, message_store, transport, tls_provider, tasks);
+    coordinator.CheckMail();
+    server.join();
+    if (server_failure) {
+        std::rethrow_exception(server_failure);
+    }
+
+    const auto errors = tasks.Errors();
+    HERMES_CHECK_EQ(errors.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK_EQ(errors.front().kind, hermes::MailTaskErrorKind::kUnsupportedMechanism);
+    HERMES_CHECK_EQ(errors.front().mechanism, std::string("RPA"));
+    HERMES_CHECK(errors.front().message.find("not yet implemented") != std::string::npos);
+}
+
+HERMES_TEST(MailTransportCoordinatorUsesSharedKerberosHelperForImap) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::exception_ptr server_failure;
+    std::thread server([&]() {
+        try {
+            for (int session = 0; session < 2; ++session) {
+                const int client = ::accept(listener, nullptr, nullptr);
+                HERMES_CHECK(client >= 0);
+                WriteAll(client, "* OK imap.example.test ready\r\n");
+                HERMES_CHECK(ReadLine(client) == "A1 AUTHENTICATE GSSAPI");
+                WriteAll(client, "+ " + Base64Encode("server-1") + "\r\n");
+                HERMES_CHECK(ReadLine(client) == Base64Encode("client-1"));
+                WriteAll(client, "+ " + Base64Encode("server-2") + "\r\n");
+                HERMES_CHECK(ReadLine(client) == Base64Encode("client-2"));
+                WriteAll(client, "+ " + Base64Encode(std::string("\1\0\0\0", 4)) + "\r\n");
+                HERMES_CHECK(ReadLine(client) == Base64Encode("wrapped-final"));
+                WriteAll(client, "A1 OK AUTHENTICATE completed\r\n");
+                if (session == 0) {
+                    HERMES_CHECK(ReadLine(client) == "A2 LIST \"\" \"*\"");
+                    WriteAll(client, "* LIST () \"/\" \"INBOX\"\r\n");
+                    WriteAll(client, "A2 OK LIST completed\r\n");
+                } else {
+                    HERMES_CHECK(ReadLine(client) == "A2 SELECT \"INBOX\"");
+                    WriteAll(client, "* 0 EXISTS\r\n");
+                    WriteAll(client, "* OK [UIDVALIDITY 777] UIDs valid\r\n");
+                    WriteAll(client, "A2 OK [READ-WRITE] SELECT completed\r\n");
+                    HERMES_CHECK(ReadLine(client) == "A3 UID FETCH 1:* (UID FLAGS BODY.PEEK[])");
+                    WriteAll(client, "A3 OK UID FETCH completed\r\n");
+                }
+                ::close(client);
+            }
+            ::close(listener);
+        } catch (...) {
+            server_failure = std::current_exception();
+        }
+    });
+
+    hermes::AccountProfile account;
+    account.id = "imap-krb";
+    account.display_name = "IMAP Kerberos";
+    account.login_name = "imap-user";
+    account.incoming_server = "127.0.0.1";
+    account.incoming_port = port;
+    account.uses_imap = true;
+    account.check_mail_by_default = true;
+    account.imap_auth = hermes::ImapAuthMode::kKerberos;
+    account.kerberos.service_name = "imap";
+    account.kerberos.realm = "EXAMPLE.TEST";
+    account.kerberos.service_format = "%s/%h@%r";
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::tests::ScopedTempDirectory temp("hermes-imap-kerberos");
+    hermes::FilesystemSyncStateStore sync_store(temp.Path() / "sync");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+    FakeGssapiEngine fake_engine;
+    fake_engine.config.expected_inputs = {"server-1", "server-2"};
+    fake_engine.config.steps = {{true, "client-1"}, {false, "client-2"}};
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("imap-krb", hermes::CredentialKind::kIncoming, "krb-pass",
+                                            &error_message));
+
+    hermes::MailTransportCoordinator coordinator(accounts,
+                                                 credentials,
+                                                 sync_store,
+                                                 mailbox_store,
+                                                 message_store,
+                                                 transport,
+                                                 tls_provider,
+                                                 tasks,
+                                                 nullptr,
+                                                 &fake_engine);
+    const auto summary = coordinator.CheckMail();
+    server.join();
+    if (server_failure) {
+        std::rethrow_exception(server_failure);
+    }
+
+    HERMES_CHECK(summary.success);
+    HERMES_CHECK_EQ(summary.mailboxes_discovered, static_cast<std::size_t>(1));
+    HERMES_CHECK(tasks.Errors().empty());
+    HERMES_CHECK_EQ(fake_engine.principals.size(), static_cast<std::size_t>(2));
+    HERMES_CHECK_EQ(fake_engine.principals.front(), std::string("imap/127.0.0.1@EXAMPLE.TEST"));
+}
+
+HERMES_TEST(MailTransportCoordinatorClassifiesImapKerberosHandshakeFailures) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::exception_ptr server_failure;
+    std::thread server([&]() {
+        try {
+            const int client = ::accept(listener, nullptr, nullptr);
+            HERMES_CHECK(client >= 0);
+            WriteAll(client, "* OK imap.example.test ready\r\n");
+            HERMES_CHECK(ReadLine(client) == "A1 AUTHENTICATE GSSAPI");
+            WriteAll(client, "+ " + Base64Encode("server-1") + "\r\n");
+            HERMES_CHECK(ReadLine(client) == Base64Encode("client-1"));
+            WriteAll(client, "+ " + Base64Encode("server-2") + "\r\n");
+            HERMES_CHECK(ReadLine(client) == Base64Encode("client-2"));
+            WriteAll(client, "+ " + Base64Encode("server-final") + "\r\n");
+            HERMES_CHECK(ReadLine(client).empty());
+            ::close(client);
+            ::close(listener);
+        } catch (...) {
+            server_failure = std::current_exception();
+        }
+    });
+
+    hermes::AccountProfile account;
+    account.id = "imap-krb";
+    account.display_name = "IMAP Kerberos";
+    account.login_name = "imap-user";
+    account.incoming_server = "127.0.0.1";
+    account.incoming_port = port;
+    account.uses_imap = true;
+    account.check_mail_by_default = true;
+    account.imap_auth = hermes::ImapAuthMode::kKerberos;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::tests::ScopedTempDirectory temp("hermes-imap-kerberos-fail");
+    hermes::FilesystemSyncStateStore sync_store(temp.Path() / "sync");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+    FakeGssapiEngine fake_engine;
+    fake_engine.config.expected_inputs = {"server-1", "server-2"};
+    fake_engine.config.steps = {{true, "client-1"}, {false, "client-2"}};
+    fake_engine.config.fail_unwrap = true;
+    fake_engine.config.unwrap_failure_kind = hermes::MailTaskErrorKind::kHandshakeFailed;
+    fake_engine.config.unwrap_failure_message = "Synthetic IMAP GSSAPI unwrap failure.";
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("imap-krb", hermes::CredentialKind::kIncoming, "krb-pass",
+                                            &error_message));
+
+    hermes::MailTransportCoordinator coordinator(accounts,
+                                                 credentials,
+                                                 sync_store,
+                                                 mailbox_store,
+                                                 message_store,
+                                                 transport,
+                                                 tls_provider,
+                                                 tasks,
+                                                 nullptr,
+                                                 &fake_engine);
+    coordinator.CheckMail();
+    server.join();
+    if (server_failure) {
+        std::rethrow_exception(server_failure);
+    }
+
+    const auto errors = tasks.Errors();
+    HERMES_CHECK_EQ(errors.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK_EQ(errors.front().kind, hermes::MailTaskErrorKind::kHandshakeFailed);
+    HERMES_CHECK_EQ(errors.front().mechanism, std::string("GSSAPI"));
+    HERMES_CHECK(errors.front().message.find("Synthetic IMAP GSSAPI unwrap failure.") != std::string::npos);
 }
 
 #endif

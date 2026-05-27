@@ -27,6 +27,18 @@ enum class MailTaskState {
     kFailed,
 };
 
+enum class MailTaskErrorKind {
+    kUnknown,
+    kUnsupportedMechanism,
+    kCredentialRejected,
+    kCredentialAcquisitionFailed,
+    kHandshakeFailed,
+    kServerRejected,
+    kTlsRequired,
+    kKerberosUnavailable,
+    kServicePrincipalFailure,
+};
+
 struct MailTaskRecord {
     std::string id;
     std::string persona;
@@ -42,8 +54,12 @@ struct MailTaskRecord {
 
 struct MailTaskError {
     std::string task_id;
+    MailTaskErrorKind kind = MailTaskErrorKind::kUnknown;
+    std::string mechanism;
     std::string message;
 };
+
+std::string ToString(MailTaskErrorKind kind);
 
 class MailTaskModel {
 public:
@@ -53,7 +69,9 @@ public:
     virtual bool CompleteTask(std::string_view task_id, std::string_view status) = 0;
     virtual bool FailTask(std::string_view task_id,
                           std::string_view status,
-                          std::string_view error_message) = 0;
+                          std::string_view error_message,
+                          MailTaskErrorKind kind = MailTaskErrorKind::kUnknown,
+                          std::string_view mechanism = {}) = 0;
     virtual std::vector<MailTaskRecord> Tasks() const = 0;
     virtual std::vector<MailTaskError> Errors() const = 0;
 };
@@ -64,7 +82,9 @@ public:
     bool CompleteTask(std::string_view task_id, std::string_view status) override;
     bool FailTask(std::string_view task_id,
                   std::string_view status,
-                  std::string_view error_message) override;
+                  std::string_view error_message,
+                  MailTaskErrorKind kind = MailTaskErrorKind::kUnknown,
+                  std::string_view mechanism = {}) override;
     std::vector<MailTaskRecord> Tasks() const override;
     std::vector<MailTaskError> Errors() const override;
 

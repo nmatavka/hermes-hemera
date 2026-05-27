@@ -1,4 +1,5 @@
 #include "hermes/MailTransportCoordinator.h"
+#include "hermes/GssapiAuthenticator.h"
 
 #include <algorithm>
 #include <atomic>
@@ -20,10 +21,6 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/md5.h>
-#endif
-
-#if HERMES_HAS_KRB5
-#include <gssapi/gssapi.h>
 #endif
 
 namespace hermes {
@@ -217,29 +214,6 @@ std::string DecodeQuotedPrintable(const std::string& input) {
     return decoded;
 }
 
-std::string ReplaceAll(std::string value, std::string_view needle, std::string_view replacement) {
-    std::size_t position = 0;
-    while ((position = value.find(needle, position)) != std::string::npos) {
-        value.replace(position, needle.size(), replacement);
-        position += replacement.size();
-    }
-    return value;
-}
-
-std::string KerberosServicePrincipal(const AccountProfile& account,
-                                    std::string_view host,
-                                    std::string_view default_service_name) {
-    std::string format =
-        account.kerberos.service_format.empty() ? "%s@%h" : account.kerberos.service_format;
-    format = ReplaceAll(std::move(format),
-                        "%s",
-                        account.kerberos.service_name.empty() ? std::string(default_service_name)
-                                                              : account.kerberos.service_name);
-    format = ReplaceAll(std::move(format), "%h", host);
-    format = ReplaceAll(std::move(format), "%r", account.kerberos.realm);
-    return format;
-}
-
 std::string HexEncode(const unsigned char* data, std::size_t size) {
     static constexpr char kHex[] = "0123456789abcdef";
     std::string output;
@@ -280,202 +254,6 @@ std::string HmacMd5Hex(const std::string& key, const std::string& input) {
     return {};
 #endif
 }
-
-#if HERMES_HAS_KRB5
-std::string GssStatusToString(OM_uint32 code, int type) {
-    OM_uint32 minor = 0;
-    OM_uint32 context = 0;
-    std::string combined;
-    do {
-        gss_buffer_desc buffer = GSS_C_EMPTY_BUFFER;
-        const OM_uint32 major =
-            gss_display_status(&minor, code, type, GSS_C_NO_OID, &context, &buffer);
-        if (major != GSS_S_COMPLETE) {
-            break;
-        }
-        if (buffer.length > 0 && buffer.value != nullptr) {
-            if (!combined.empty()) {
-                combined += " | ";
-            }
-            combined.append(static_cast<const char*>(buffer.value), buffer.length);
-        }
-        gss_release_buffer(&minor, &buffer);
-    } while (context != 0);
-    return combined;
-}
-
-std::string GssErrorText(OM_uint32 major, OM_uint32 minor) {
-    std::string major_text = GssStatusToString(major, GSS_C_GSS_CODE);
-    std::string minor_text = GssStatusToString(minor, GSS_C_MECH_CODE);
-    if (major_text.empty()) {
-        major_text = "Unknown GSSAPI failure";
-    }
-    if (!minor_text.empty()) {
-        major_text += ": ";
-        major_text += minor_text;
-    }
-    return major_text;
-}
-
-bool PerformGssapiExchange(const std::string& service_principal,
-                           const std::string& authzid,
-                           const std::function<bool(std::string*, std::string*)>& read_challenge,
-                           const std::function<bool(std::string_view, std::string*)>& send_response,
-                           std::string* error_message) {
-    constexpr unsigned char kAuthGssapiProtectionNone = 1;
-
-    OM_uint32 major = 0;
-    OM_uint32 minor = 0;
-    gss_name_t target_name = GSS_C_NO_NAME;
-    gss_ctx_id_t context = GSS_C_NO_CONTEXT;
-    gss_buffer_desc service_buffer = {
-        service_principal.size(),
-        const_cast<char*>(service_principal.data()),
-    };
-    gss_buffer_desc input_token = GSS_C_EMPTY_BUFFER;
-    gss_buffer_desc output_token = GSS_C_EMPTY_BUFFER;
-    gss_buffer_desc unwrap_token = GSS_C_EMPTY_BUFFER;
-    std::string current_challenge;
-
-    major = gss_import_name(&minor,
-                            &service_buffer,
-                            GSS_C_NT_HOSTBASED_SERVICE,
-                            &target_name);
-    if (major != GSS_S_COMPLETE) {
-        if (error_message) {
-            *error_message = GssErrorText(major, minor);
-        }
-        return false;
-    }
-
-    auto cleanup = [&]() {
-        if (target_name != GSS_C_NO_NAME) {
-            gss_release_name(&minor, &target_name);
-        }
-        if (context != GSS_C_NO_CONTEXT) {
-            gss_delete_sec_context(&minor, &context, GSS_C_NO_BUFFER);
-        }
-    };
-
-    if (!read_challenge(&current_challenge, error_message)) {
-        cleanup();
-        return false;
-    }
-
-    do {
-        std::string decoded_challenge = Base64Decode(current_challenge);
-        if (decoded_challenge.empty()) {
-            input_token = GSS_C_EMPTY_BUFFER;
-        } else {
-            input_token.length = decoded_challenge.size();
-            input_token.value = decoded_challenge.data();
-        }
-
-        output_token = GSS_C_EMPTY_BUFFER;
-        major = gss_init_sec_context(&minor,
-                                     GSS_C_NO_CREDENTIAL,
-                                     &context,
-                                     target_name,
-                                     GSS_C_NO_OID,
-                                     GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG,
-                                     0,
-                                     GSS_C_NO_CHANNEL_BINDINGS,
-                                     decoded_challenge.empty() ? GSS_C_NO_BUFFER : &input_token,
-                                     nullptr,
-                                     &output_token,
-                                     nullptr,
-                                     nullptr);
-        if (major != GSS_S_COMPLETE && major != GSS_S_CONTINUE_NEEDED) {
-            if (error_message) {
-                *error_message = GssErrorText(major, minor);
-            }
-            if (output_token.length > 0) {
-                gss_release_buffer(&minor, &output_token);
-            }
-            cleanup();
-            return false;
-        }
-
-        const std::string response = Base64Encode(
-            output_token.length > 0 && output_token.value != nullptr
-                ? std::string(static_cast<const char*>(output_token.value), output_token.length)
-                : std::string());
-        gss_release_buffer(&minor, &output_token);
-        if (!send_response(response, error_message)) {
-            cleanup();
-            return false;
-        }
-
-        if (major == GSS_S_CONTINUE_NEEDED) {
-            if (!read_challenge(&current_challenge, error_message)) {
-                cleanup();
-                return false;
-            }
-        }
-    } while (major == GSS_S_CONTINUE_NEEDED);
-
-    if (!read_challenge(&current_challenge, error_message)) {
-        cleanup();
-        return false;
-    }
-
-    const std::string decoded_final = Base64Decode(current_challenge);
-    if (!decoded_final.empty()) {
-        unwrap_token.length = decoded_final.size();
-        unwrap_token.value = const_cast<char*>(decoded_final.data());
-        gss_buffer_desc unwrapped = GSS_C_EMPTY_BUFFER;
-        int conf_state = 0;
-        gss_qop_t qop_state = 0;
-        major = gss_unwrap(&minor, context, &unwrap_token, &unwrapped, &conf_state, &qop_state);
-        if (major != GSS_S_COMPLETE) {
-            if (error_message) {
-                *error_message = GssErrorText(major, minor);
-            }
-            cleanup();
-            return false;
-        }
-        if (unwrapped.length < 4 || unwrapped.value == nullptr ||
-            !(static_cast<const unsigned char*>(unwrapped.value)[0] & kAuthGssapiProtectionNone)) {
-            gss_release_buffer(&minor, &unwrapped);
-            if (error_message) {
-                *error_message = "GSSAPI server did not offer no-protection SASL mode.";
-            }
-            cleanup();
-            return false;
-        }
-
-        std::string final_payload(static_cast<const char*>(unwrapped.value), unwrapped.length);
-        gss_release_buffer(&minor, &unwrapped);
-        final_payload.resize(4);
-        final_payload[0] = static_cast<char>(kAuthGssapiProtectionNone);
-        final_payload += authzid;
-
-        gss_buffer_desc wrap_input = {final_payload.size(), final_payload.data()};
-        gss_buffer_desc wrapped = GSS_C_EMPTY_BUFFER;
-        major = gss_wrap(&minor, context, 0, qop_state, &wrap_input, &conf_state, &wrapped);
-        if (major != GSS_S_COMPLETE) {
-            if (error_message) {
-                *error_message = GssErrorText(major, minor);
-            }
-            cleanup();
-            return false;
-        }
-
-        const std::string wrapped_response = Base64Encode(
-            wrapped.length > 0 && wrapped.value != nullptr
-                ? std::string(static_cast<const char*>(wrapped.value), wrapped.length)
-                : std::string());
-        gss_release_buffer(&minor, &wrapped);
-        if (!send_response(wrapped_response, error_message)) {
-            cleanup();
-            return false;
-        }
-    }
-
-    cleanup();
-    return true;
-}
-#endif
 
 std::vector<std::string> SplitRecipients(std::string_view value) {
     std::vector<std::string> recipients;
@@ -916,6 +694,12 @@ bool PersistAttachmentPayloads(MessageStore& message_store,
     return true;
 }
 
+struct AuthFailureDetails {
+    MailTaskErrorKind kind = MailTaskErrorKind::kUnknown;
+    std::string mechanism;
+    std::string message;
+};
+
 class TaskScope {
 public:
     TaskScope(MailTaskModel& task_model,
@@ -945,8 +729,11 @@ public:
         completed_ = true;
     }
 
-    void Fail(std::string status, std::string error_message) {
-        task_model_.FailTask(task_.id, status, error_message);
+    void Fail(std::string status,
+              std::string error_message,
+              MailTaskErrorKind kind = MailTaskErrorKind::kUnknown,
+              std::string mechanism = {}) {
+        task_model_.FailTask(task_.id, status, error_message, kind, mechanism);
         completed_ = true;
     }
 
@@ -1182,18 +969,25 @@ public:
                std::string password,
                MessageStore& message_store,
                TransportService& transport_service,
-               const TlsProvider& tls_provider)
+               const TlsProvider& tls_provider,
+               const GssapiEngine& gssapi_engine)
         : account_(account),
           password_(std::move(password)),
           message_store_(message_store),
           transport_service_(transport_service),
-          tls_provider_(tls_provider) {}
+          tls_provider_(tls_provider),
+          gssapi_engine_(gssapi_engine) {}
 
     bool FetchMessages(PopSyncState* state,
                        std::vector<MessageRecord>* messages,
                        std::string* error_message) {
+        last_auth_failure_.reset();
+        const std::uint16_t incoming_port =
+            account_.pop_auth == PopAuthMode::kKerberos && account_.kerberos.pop_port != 0
+                ? account_.kerberos.pop_port
+                : account_.incoming_port;
         auto connection = transport_service_.Connect(
-            {account_.incoming_server, account_.incoming_port, MapSecurity(account_.incoming_security), 5000},
+            {account_.incoming_server, incoming_port, MapSecurity(account_.incoming_security), 5000},
             error_message);
         if (!connection) {
             return false;
@@ -1303,10 +1097,15 @@ public:
         return true;
     }
 
+    const std::optional<AuthFailureDetails>& LastAuthFailure() const {
+        return last_auth_failure_;
+    }
+
 private:
     bool Authenticate(TransportConnection& connection,
                       const std::string& greeting,
                       std::string* error_message) {
+        last_auth_failure_.reset();
         switch (account_.pop_auth) {
             case PopAuthMode::kPassword:
                 return SendSimple(connection, "USER " + account_.login_name + "\r\n", "+OK", error_message) &&
@@ -1328,13 +1127,31 @@ private:
                                   error_message);
             }
 
-            case PopAuthMode::kKerberos:
-#if HERMES_HAS_KRB5
+            case PopAuthMode::kKerberos: {
+                MailTaskErrorKind principal_error_kind = MailTaskErrorKind::kUnknown;
+                std::string principal_error_message;
+                const std::string service_principal = BuildKerberosServicePrincipal(
+                    account_,
+                    account_.incoming_server,
+                    "pop",
+                    &principal_error_kind,
+                    &principal_error_message);
+                if (service_principal.empty()) {
+                    last_auth_failure_ =
+                        AuthFailureDetails{principal_error_kind, "GSSAPI", std::move(principal_error_message)};
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
+                    }
+                    return false;
+                }
+
                 if (!connection.Send("AUTH GSSAPI\r\n", error_message)) {
                     return false;
                 }
-                if (!PerformGssapiExchange(
-                        KerberosServicePrincipal(account_, account_.incoming_server, "pop"),
+                GssapiAuthenticator authenticator(gssapi_engine_);
+                GssapiAuthFailure auth_failure;
+                if (!authenticator.Exchange(
+                        service_principal,
                         account_.login_name,
                         [&](std::string* challenge, std::string* challenge_error) {
                             std::string line;
@@ -1351,9 +1168,18 @@ private:
                             return true;
                         },
                         [&](std::string_view response, std::string* send_error) {
-                            return connection.Send(std::string(response) + "\r\n", send_error);
+                            return connection.Send(std::string(response), send_error);
                         },
-                        error_message)) {
+                        &auth_failure)) {
+                    std::string message = auth_failure.message;
+                    if (!auth_failure.principal.empty()) {
+                        message += " [principal: " + auth_failure.principal + "]";
+                    }
+                    last_auth_failure_ =
+                        AuthFailureDetails{auth_failure.kind, auth_failure.mechanism, std::move(message)};
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
+                    }
                     return false;
                 }
                 {
@@ -1362,23 +1188,28 @@ private:
                         return false;
                     }
                     if (line.rfind("+OK", 0) != 0) {
+                        last_auth_failure_ =
+                            AuthFailureDetails{MailTaskErrorKind::kServerRejected,
+                                               "GSSAPI",
+                                               "POP GSSAPI authentication failed: " + line};
                         if (error_message) {
-                            *error_message = "POP GSSAPI authentication failed: " + line;
+                            *error_message = last_auth_failure_->message;
                         }
                         return false;
                     }
+                    last_auth_failure_.reset();
                     return true;
                 }
-#else
-                if (error_message) {
-                    *error_message = "Kerberos support is unavailable in this build.";
-                }
-                return false;
-#endif
+            }
 
             case PopAuthMode::kRPA:
+                last_auth_failure_ = AuthFailureDetails{
+                    MailTaskErrorKind::kUnsupportedMechanism,
+                    "RPA",
+                    "POP RPA authentication is not yet implemented.",
+                };
                 if (error_message) {
-                    *error_message = "POP RPA authentication is not yet implemented.";
+                    *error_message = last_auth_failure_->message;
                 }
                 return false;
         }
@@ -1410,6 +1241,8 @@ private:
     MessageStore& message_store_;
     TransportService& transport_service_;
     const TlsProvider& tls_provider_;
+    const GssapiEngine& gssapi_engine_;
+    std::optional<AuthFailureDetails> last_auth_failure_;
 };
 
 struct ImapFetchItem {
@@ -1424,12 +1257,14 @@ public:
                 std::string password,
                 MessageStore& message_store,
                 TransportService& transport_service,
-                const TlsProvider& tls_provider)
+                const TlsProvider& tls_provider,
+                const GssapiEngine& gssapi_engine)
         : account_(account),
           password_(std::move(password)),
           message_store_(message_store),
           transport_service_(transport_service),
-          tls_provider_(tls_provider) {}
+          tls_provider_(tls_provider),
+          gssapi_engine_(gssapi_engine) {}
 
     bool DiscoverMailboxes(std::vector<std::string>* remote_mailboxes, std::string* error_message) {
         if (!ConnectAndAuthenticate(error_message)) {
@@ -1672,11 +1507,16 @@ public:
         return true;
     }
 
+    const std::optional<AuthFailureDetails>& LastAuthFailure() const {
+        return last_auth_failure_;
+    }
+
 private:
     bool ConnectAndAuthenticate(std::string* error_message) {
         if (connection_) {
             return true;
         }
+        last_auth_failure_.reset();
         connection_ = transport_service_.Connect(
             {account_.incoming_server, account_.incoming_port, MapSecurity(account_.incoming_security), 5000},
             error_message);
@@ -1729,15 +1569,32 @@ private:
                 return ReadTaggedResult(tag, nullptr, error_message);
             }
 
-            case ImapAuthMode::kKerberos:
-#if HERMES_HAS_KRB5
-            {
+            case ImapAuthMode::kKerberos: {
+                MailTaskErrorKind principal_error_kind = MailTaskErrorKind::kUnknown;
+                std::string principal_error_message;
+                const std::string service_principal = BuildKerberosServicePrincipal(
+                    account_,
+                    account_.incoming_server,
+                    "imap",
+                    &principal_error_kind,
+                    &principal_error_message);
+                if (service_principal.empty()) {
+                    last_auth_failure_ =
+                        AuthFailureDetails{principal_error_kind, "GSSAPI", std::move(principal_error_message)};
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
+                    }
+                    return false;
+                }
+
                 const std::string tag = NextTag();
                 if (!connection_->Send(tag + " AUTHENTICATE GSSAPI\r\n", error_message)) {
                     return false;
                 }
-                if (!PerformGssapiExchange(
-                        KerberosServicePrincipal(account_, account_.incoming_server, "imap"),
+                GssapiAuthenticator authenticator(gssapi_engine_);
+                GssapiAuthFailure auth_failure;
+                if (!authenticator.Exchange(
+                        service_principal,
                         account_.login_name,
                         [&](std::string* challenge, std::string* challenge_error) {
                             std::string line;
@@ -1754,19 +1611,33 @@ private:
                             return true;
                         },
                         [&](std::string_view response, std::string* send_error) {
-                            return connection_->Send(std::string(response) + "\r\n", send_error);
+                            return connection_->Send(std::string(response), send_error);
                         },
-                        error_message)) {
+                        &auth_failure)) {
+                    std::string message = auth_failure.message;
+                    if (!auth_failure.principal.empty()) {
+                        message += " [principal: " + auth_failure.principal + "]";
+                    }
+                    last_auth_failure_ =
+                        AuthFailureDetails{auth_failure.kind, auth_failure.mechanism, std::move(message)};
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
+                    }
                     return false;
                 }
-                return ReadTaggedResult(tag, nullptr, error_message);
-            }
-#else
-                if (error_message) {
-                    *error_message = "Kerberos support is unavailable in this build.";
+                if (!ReadTaggedResult(tag, nullptr, error_message)) {
+                    if (error_message && StartsWithInsensitive(*error_message, "IMAP command failed:")) {
+                        last_auth_failure_ = AuthFailureDetails{
+                            MailTaskErrorKind::kServerRejected,
+                            "GSSAPI",
+                            *error_message,
+                        };
+                    }
+                    return false;
                 }
-                return false;
-#endif
+                last_auth_failure_.reset();
+                return true;
+            }
         }
         return false;
     }
@@ -1884,7 +1755,9 @@ private:
     MessageStore& message_store_;
     TransportService& transport_service_;
     const TlsProvider& tls_provider_;
+    const GssapiEngine& gssapi_engine_;
     std::unique_ptr<TransportConnection> connection_;
+    std::optional<AuthFailureDetails> last_auth_failure_;
     int tag_counter_ = 0;
 };
 
@@ -2014,7 +1887,12 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
                             MessageStore& message_store,
                             TransportService& transport_service,
                             TlsProvider& tls_provider,
+                            const GssapiEngine& gssapi_engine,
+                            std::optional<AuthFailureDetails>* auth_failure,
                             std::string* error_message) {
+    if (auth_failure) {
+        auth_failure->reset();
+    }
     const auto account = FindAccountById(account_service, action.account_id);
     if (!account) {
         if (error_message) {
@@ -2031,48 +1909,82 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
         return false;
     }
 
-    ImapSession session(*account, *password, message_store, transport_service, tls_provider);
+    ImapSession session(*account, *password, message_store, transport_service, tls_provider, gssapi_engine);
     switch (action.kind) {
         case ImapActionKind::kDelete:
             if (!action.destination_remote_mailbox.empty()) {
-                return session.MoveMessage(action.remote_mailbox,
-                                           action.remote_message_id,
-                                           action.destination_remote_mailbox,
-                                           error_message);
+                const bool ok = session.MoveMessage(action.remote_mailbox,
+                                                    action.remote_message_id,
+                                                    action.destination_remote_mailbox,
+                                                    error_message);
+                if (!ok && auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
+                return ok;
             }
-            return session.SetDeleted(action.remote_mailbox,
-                                      action.remote_message_id,
-                                      true,
-                                      !account->mark_as_deleted,
-                                      error_message);
+            {
+                const bool ok = session.SetDeleted(action.remote_mailbox,
+                                                   action.remote_message_id,
+                                                   true,
+                                                   !account->mark_as_deleted,
+                                                   error_message);
+                if (!ok && auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
+                return ok;
+            }
 
         case ImapActionKind::kUndelete:
-            return session.SetDeleted(action.remote_mailbox,
-                                      action.remote_message_id,
-                                      false,
-                                      false,
-                                      error_message);
+            {
+                const bool ok = session.SetDeleted(action.remote_mailbox,
+                                                   action.remote_message_id,
+                                                   false,
+                                                   false,
+                                                   error_message);
+                if (!ok && auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
+                return ok;
+            }
 
         case ImapActionKind::kMove:
-            return session.MoveMessage(action.remote_mailbox,
-                                       action.remote_message_id,
-                                       action.destination_remote_mailbox,
-                                       error_message);
+            {
+                const bool ok = session.MoveMessage(action.remote_mailbox,
+                                                    action.remote_message_id,
+                                                    action.destination_remote_mailbox,
+                                                    error_message);
+                if (!ok && auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
+                return ok;
+            }
 
         case ImapActionKind::kCopy:
-            return session.CopyMessage(action.remote_mailbox,
-                                       action.remote_message_id,
-                                       action.destination_remote_mailbox,
-                                       error_message);
+            {
+                const bool ok = session.CopyMessage(action.remote_mailbox,
+                                                    action.remote_message_id,
+                                                    action.destination_remote_mailbox,
+                                                    error_message);
+                if (!ok && auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
+                return ok;
+            }
 
         case ImapActionKind::kCreateMailbox:
             if (!session.CreateMailbox(action.remote_mailbox, error_message)) {
+                if (auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
                 return false;
             }
             return EnsureRemoteMailbox(mailbox_store, *account, action.remote_mailbox, error_message);
 
         case ImapActionKind::kRenameMailbox:
             if (!session.RenameMailbox(action.remote_mailbox, action.rename_target, error_message)) {
+                if (auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
                 return false;
             }
             {
@@ -2106,6 +2018,9 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
 
         case ImapActionKind::kDeleteMailbox:
             if (!session.DeleteMailbox(action.remote_mailbox, error_message)) {
+                if (auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
                 return false;
             }
             if (mailbox_store.GetMailbox(action.mailbox_id).has_value()) {
@@ -2124,6 +2039,9 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
                                           &record,
                                           &payloads,
                                           error_message)) {
+                if (auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
                 return false;
             }
             if (!message_store.SaveMessage(record, error_message)) {
@@ -2139,6 +2057,9 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
             state.last_seen_uid = 0;
             std::vector<MessageRecord> messages;
             if (!session.SyncMailbox(action.remote_mailbox, &state, &messages, error_message)) {
+                if (auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
                 return false;
             }
             if (!sync_state_store.SaveImapState(state, error_message)) {
@@ -2155,6 +2076,9 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
         case ImapActionKind::kRefreshMailboxList: {
             std::vector<std::string> remote_mailboxes;
             if (!session.DiscoverMailboxes(&remote_mailboxes, error_message)) {
+                if (auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
                 return false;
             }
             for (const auto& remote_mailbox : remote_mailboxes) {
@@ -2178,7 +2102,8 @@ MailTransportCoordinator::MailTransportCoordinator(AccountService& account_servi
                                                    TransportService& transport_service,
                                                    TlsProvider& tls_provider,
                                                    MailTaskModel& task_model,
-                                                   ImapActionStore* imap_action_store)
+                                                   ImapActionStore* imap_action_store,
+                                                   const GssapiEngine* gssapi_engine)
     : account_service_(account_service),
       credential_store_(credential_store),
       sync_state_store_(sync_state_store),
@@ -2187,7 +2112,8 @@ MailTransportCoordinator::MailTransportCoordinator(AccountService& account_servi
       transport_service_(transport_service),
       tls_provider_(tls_provider),
       task_model_(task_model),
-      imap_action_store_(imap_action_store) {}
+      imap_action_store_(imap_action_store),
+      gssapi_engine_(gssapi_engine != nullptr ? gssapi_engine : &DefaultGssapiEngine()) {}
 
 MailTransportSummary MailTransportCoordinator::SendQueued() {
     MailTransportSummary summary;
@@ -2275,6 +2201,7 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
             imap_action_store_->SaveAction(action, nullptr);
 
             std::string action_error;
+            std::optional<AuthFailureDetails> action_auth_failure;
             TaskScope task(task_model_,
                            action.kind == ImapActionKind::kFetchAttachment
                                    ? MailTaskKind::kAttachmentFetch
@@ -2290,11 +2217,20 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
                                        message_store_,
                                        transport_service_,
                                        tls_provider_,
+                                       *gssapi_engine_,
+                                       &action_auth_failure,
                                        &action_error)) {
                 task.Complete("Complete");
                 imap_action_store_->DeleteAction(action.id, nullptr);
             } else {
-                task.Fail("Failed", action_error);
+                if (action_auth_failure) {
+                    task.Fail("Failed",
+                              action_error,
+                              action_auth_failure->kind,
+                              action_auth_failure->mechanism);
+                } else {
+                    task.Fail("Failed", action_error);
+                }
                 action.state = stop_requested_ ? ImapActionState::kPending : ImapActionState::kFailed;
                 action.updated_at = NowUnixSeconds();
                 action.last_error = action_error;
@@ -2326,9 +2262,16 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
             std::vector<MessageRecord> messages;
             TaskScope task(task_model_, MailTaskKind::kReceiving, DisplayName(account), "Check POP mail", "Checking");
             std::string error_message;
-            PopSession session(account, *password, message_store_, transport_service_, tls_provider_);
+            PopSession session(account, *password, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
             if (!session.FetchMessages(&state, &messages, &error_message)) {
-                task.Fail("Failed", error_message);
+                if (session.LastAuthFailure()) {
+                    task.Fail("Failed",
+                              error_message,
+                              session.LastAuthFailure()->kind,
+                              session.LastAuthFailure()->mechanism);
+                } else {
+                    task.Fail("Failed", error_message);
+                }
                 summary.warnings.push_back(error_message);
                 continue;
             }
@@ -2351,10 +2294,17 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
             TaskScope discovery_task(
                 task_model_, MailTaskKind::kMailboxDiscovery, DisplayName(account), "Refresh IMAP mailboxes", "Listing");
             std::string error_message;
-            ImapSession session(account, *password, message_store_, transport_service_, tls_provider_);
+            ImapSession session(account, *password, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
             std::vector<std::string> remote_mailboxes;
             if (!session.DiscoverMailboxes(&remote_mailboxes, &error_message)) {
-                discovery_task.Fail("Failed", error_message);
+                if (session.LastAuthFailure()) {
+                    discovery_task.Fail("Failed",
+                                        error_message,
+                                        session.LastAuthFailure()->kind,
+                                        session.LastAuthFailure()->mechanism);
+                } else {
+                    discovery_task.Fail("Failed", error_message);
+                }
                 summary.warnings.push_back(error_message);
                 continue;
             }
@@ -2381,9 +2331,17 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
                 std::vector<MessageRecord> messages;
                 TaskScope sync_task(
                     task_model_, MailTaskKind::kImapSync, DisplayName(account), "Sync " + remote_mailbox, "Syncing");
-                ImapSession sync_session(account, *password, message_store_, transport_service_, tls_provider_);
+                ImapSession sync_session(
+                    account, *password, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
                 if (!sync_session.SyncMailbox(remote_mailbox, &state, &messages, &error_message)) {
-                    sync_task.Fail("Failed", error_message);
+                    if (sync_session.LastAuthFailure()) {
+                        sync_task.Fail("Failed",
+                                       error_message,
+                                       sync_session.LastAuthFailure()->kind,
+                                       sync_session.LastAuthFailure()->mechanism);
+                    } else {
+                        sync_task.Fail("Failed", error_message);
+                    }
                     summary.warnings.push_back(error_message);
                     continue;
                 }
@@ -2455,6 +2413,7 @@ MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view m
             imap_action_store_->SaveAction(action, nullptr);
 
             std::string action_error;
+            std::optional<AuthFailureDetails> action_auth_failure;
             TaskScope task(task_model_,
                            action.kind == ImapActionKind::kFetchAttachment
                                    ? MailTaskKind::kAttachmentFetch
@@ -2470,11 +2429,20 @@ MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view m
                                        message_store_,
                                        transport_service_,
                                        tls_provider_,
+                                       *gssapi_engine_,
+                                       &action_auth_failure,
                                        &action_error)) {
                 task.Complete("Complete");
                 imap_action_store_->DeleteAction(action.id, nullptr);
             } else {
-                task.Fail("Failed", action_error);
+                if (action_auth_failure) {
+                    task.Fail("Failed",
+                              action_error,
+                              action_auth_failure->kind,
+                              action_auth_failure->mechanism);
+                } else {
+                    task.Fail("Failed", action_error);
+                }
                 action.state = ImapActionState::kFailed;
                 action.updated_at = NowUnixSeconds();
                 action.last_error = action_error;
@@ -2495,7 +2463,7 @@ MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view m
 
     std::vector<MessageRecord> messages;
     std::string error_message;
-    ImapSession session(*account, *password, message_store_, transport_service_, tls_provider_);
+    ImapSession session(*account, *password, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
     if (!session.SyncMailbox(mailbox->remote_name, &state, &messages, &error_message)) {
         summary.error_message = error_message;
         return summary;

@@ -6,6 +6,7 @@ add_library(
     src/ComposeQueue.cpp
     src/FilesystemMailboxStore.cpp
     src/FilesystemDraftStore.cpp
+    src/GssapiAuthenticator.cpp
     src/ImapActionStore.cpp
     src/BufferedMessageRenderer.cpp
     src/FilesystemMessageStore.cpp
