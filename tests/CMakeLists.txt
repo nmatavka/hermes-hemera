@@ -101,4 +101,36 @@ if(HERMES_BUILD_HAIKU_SHELL AND CMAKE_SYSTEM_NAME STREQUAL "Haiku")
         NAME hermes_haiku_compose_smoke
         COMMAND hermes_haiku_compose_smoke
     )
+
+    if(HERMES_ENABLE_NATIVE_PAIGE)
+        add_executable(
+            hermes_haiku_native_paige_smoke
+            HaikuNativePaigeBuildSmoke.cpp
+        )
+
+        target_include_directories(
+            hermes_haiku_native_paige_smoke
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}
+                ${CMAKE_SOURCE_DIR}/src/hermes_port/haiku
+        )
+
+        target_link_libraries(
+            hermes_haiku_native_paige_smoke
+            PRIVATE
+                hermes::port_paige
+                paige
+        )
+
+        target_compile_definitions(
+            hermes_haiku_native_paige_smoke
+            PRIVATE
+                HERMES_ENABLE_NATIVE_PAIGE=$<BOOL:${HERMES_ENABLE_NATIVE_PAIGE}>
+        )
+
+        add_test(
+            NAME hermes_haiku_native_paige_smoke
+            COMMAND hermes_haiku_native_paige_smoke
+        )
+    endif()
 endif()

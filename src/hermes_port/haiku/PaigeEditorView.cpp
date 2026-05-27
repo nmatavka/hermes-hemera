@@ -16,6 +16,10 @@ namespace {
 
 constexpr const char* kClipboardMime = "text/plain";
 
+bool UsesNativeSurface(const hermes::PaigeRichTextSurface& surface) {
+    return surface.NativeBackendEnabled() && surface.NativeDocumentHandle() != nullptr;
+}
+
 BRect LineRect(float inset, float line_height, std::size_t index, float width) {
     const float top = inset + static_cast<float>(index) * line_height;
     return BRect(inset, top, width - inset, top + line_height);
@@ -42,7 +46,13 @@ PaigeEditorView::PaigeEditorView(hermes::PaigeRichTextSurface& surface)
     SetLowUIColor(B_DOCUMENT_BACKGROUND_COLOR);
     SetFont(be_fixed_font);
     UpdateMetrics();
+    surface_.AttachNativeView(this);
+    surface_.ResizeNativeHost(Bounds().Width(), Bounds().Height());
     ResizeToDocument();
+}
+
+PaigeEditorView::~PaigeEditorView() {
+    surface_.DetachNativeView();
 }
 
 void PaigeEditorView::SetChangeCallback(std::function<void()> callback) {
@@ -50,12 +60,32 @@ void PaigeEditorView::SetChangeCallback(std::function<void()> callback) {
 }
 
 void PaigeEditorView::ReloadFromSurface() {
+    if (UsesNativeSurface(surface_)) {
+        surface_.ResizeNativeHost(Bounds().Width(), Bounds().Height());
+        Invalidate();
+        return;
+    }
     UpdateMetrics();
     ResizeToDocument();
     Invalidate();
 }
 
 void PaigeEditorView::ScrollSelectionIntoView() {
+    if (UsesNativeSurface(surface_)) {
+        float left = 0.0f;
+        float top = 0.0f;
+        float right = 0.0f;
+        float bottom = 0.0f;
+        if (!surface_.NativeCaretRect(surface_.Selection().start, &left, &top, &right, &bottom)) {
+            return;
+        }
+        if (top < Bounds().top + inset_) {
+            ScrollTo(Bounds().left, std::max(0.0f, top - inset_));
+        } else if (bottom > Bounds().bottom - inset_) {
+            ScrollTo(Bounds().left, std::max(0.0f, bottom - Bounds().Height() + inset_));
+        }
+        return;
+    }
     const BPoint caret = PointForOffset(surface_.Selection().start);
     if (caret.y < Bounds().top + inset_) {
         ScrollTo(Bounds().left, std::max(0.0f, caret.y - inset_));
@@ -107,6 +137,10 @@ BSize PaigeEditorView::MinSize() {
 }
 
 BSize PaigeEditorView::PreferredSize() {
+    if (UsesNativeSurface(surface_)) {
+        return BSize(std::max(240.0f, Bounds().Width()), std::max(160.0f, Bounds().Height()));
+    }
+
     const auto lines = BuildLines();
     float widest = 240.0f;
     for (const auto& line : lines) {
@@ -116,6 +150,12 @@ BSize PaigeEditorView::PreferredSize() {
 }
 
 void PaigeEditorView::Draw(BRect update_rect) {
+    if (UsesNativeSurface(surface_)) {
+        FillRect(Bounds(), B_SOLID_LOW);
+        surface_.DrawNative(this, update_rect.left, update_rect.top, update_rect.right, update_rect.bottom);
+        return;
+    }
+
     (void)update_rect;
     FillRect(Bounds(), B_SOLID_LOW);
 
@@ -135,7 +175,8 @@ void PaigeEditorView::Draw(BRect update_rect) {
 void PaigeEditorView::MouseDown(BPoint where) {
     MakeFocus(true);
     dragging_selection_ = true;
-    drag_anchor_ = OffsetForPoint(where);
+    drag_anchor_ = UsesNativeSurface(surface_) ? surface_.NativeOffsetForPoint(where.x, where.y)
+                                               : OffsetForPoint(where);
     surface_.SetSelection({drag_anchor_, 0});
     Invalidate();
     SetMouseEventMask(B_POINTER_EVENTS, B_LOCK_WINDOW_FOCUS);
@@ -148,7 +189,8 @@ void PaigeEditorView::MouseMoved(BPoint where, uint32 transit, const BMessage* d
         return;
     }
 
-    const std::size_t current = OffsetForPoint(where);
+    const std::size_t current =
+        UsesNativeSurface(surface_) ? surface_.NativeOffsetForPoint(where.x, where.y) : OffsetForPoint(where);
     const std::size_t start = std::min(drag_anchor_, current);
     const std::size_t end = std::max(drag_anchor_, current);
     surface_.SetSelection({start, end - start});
@@ -222,6 +264,7 @@ void PaigeEditorView::MakeFocus(bool focus) {
 
 void PaigeEditorView::FrameResized(float width, float height) {
     BView::FrameResized(width, height);
+    surface_.ResizeNativeHost(width, height);
     Invalidate();
 }
 
@@ -241,6 +284,10 @@ void PaigeEditorView::UpdateMetrics() {
 }
 
 void PaigeEditorView::ResizeToDocument() {
+    if (UsesNativeSurface(surface_)) {
+        ResizeTo(std::max(240.0f, Bounds().Width()), std::max(160.0f, Bounds().Height()));
+        return;
+    }
     const BSize preferred = PreferredSize();
     ResizeTo(std::max(preferred.width, Bounds().Width()), std::max(preferred.height, Bounds().Height()));
 }

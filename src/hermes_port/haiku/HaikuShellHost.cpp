@@ -45,6 +45,8 @@ HaikuShellHost::HaikuShellHost()
       stationery_store_(std::make_unique<FilesystemStationeryStore>()),
       signature_store_(std::make_unique<FilesystemSignatureStore>()),
       paige_runtime_(std::make_unique<PaigeRuntime>()) {
+    std::string ignored;
+    (void)paige_runtime_->Initialize(&ignored);
     EnsureWorkspaceDirectories();
     ReloadWorkspace();
 }

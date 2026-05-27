@@ -55,4 +55,36 @@ bool PaigeRuntime::IsAvailable() const {
     return impl_ && impl_->initialized;
 }
 
+void* PaigeRuntime::NativeGlobals() {
+#if HERMES_ENABLE_NATIVE_PAIGE && HERMES_HAS_PAIGE
+    return impl_ ? &impl_->globals : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const void* PaigeRuntime::NativeGlobals() const {
+#if HERMES_ENABLE_NATIVE_PAIGE && HERMES_HAS_PAIGE
+    return impl_ ? &impl_->globals : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+void* PaigeRuntime::NativeMemoryGlobals() {
+#if HERMES_ENABLE_NATIVE_PAIGE && HERMES_HAS_PAIGE
+    return impl_ ? &impl_->memory_globals : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
+const void* PaigeRuntime::NativeMemoryGlobals() const {
+#if HERMES_ENABLE_NATIVE_PAIGE && HERMES_HAS_PAIGE
+    return impl_ ? &impl_->memory_globals : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 }  // namespace hermes

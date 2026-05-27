@@ -76,3 +76,17 @@ HERMES_TEST(PaigeRichTextSurfaceSupportsClipboardAndDiagnosticsFallback) {
     surface.ClearDiagnostics();
     HERMES_CHECK(surface.Diagnostics().empty());
 }
+
+HERMES_TEST(PaigeRuntimeReportsNoNativeStateOnFallbackHost) {
+    hermes::PaigeRuntime runtime;
+    HERMES_CHECK_EQ(runtime.NativeGlobals(), nullptr);
+    HERMES_CHECK_EQ(runtime.NativeMemoryGlobals(), nullptr);
+}
+
+HERMES_TEST(PaigeRichTextSurfaceKeepsNativePathGuardedWhenRuntimeIsUnavailable) {
+    hermes::PaigeRuntime runtime;
+    hermes::PaigeRichTextSurface surface(runtime);
+    HERMES_CHECK(surface.Load({"compose body", "<p>compose body</p>", false}));
+    HERMES_CHECK(!surface.NativeBackendEnabled());
+    HERMES_CHECK_EQ(surface.NativeDocumentHandle(), nullptr);
+}

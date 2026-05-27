@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@ namespace hermes {
 class PaigeRichTextSurface final : public RichTextSurface {
 public:
     explicit PaigeRichTextSurface(PaigeRuntime& runtime);
+    ~PaigeRichTextSurface() override;
 
     bool Load(const RichTextDocument& document) override;
     RichTextDocument Snapshot() const override;
@@ -29,8 +31,24 @@ public:
     bool RevealSelection(const TextSelection& selection) override;
 
     bool IsAvailable() const;
+    bool NativeBackendEnabled() const;
+    void* NativeDocumentHandle() const;
+
+#if HERMES_IS_HAIKU
+    void AttachNativeView(void* native_view);
+    void DetachNativeView();
+    void ResizeNativeHost(float width, float height);
+    void DrawNative(void* target_view, float left, float top, float right, float bottom);
+    std::size_t NativeOffsetForPoint(float x, float y) const;
+    bool NativeCaretRect(std::size_t offset, float* left, float* top, float* right, float* bottom) const;
+#endif
 
 private:
+    bool EnsureNativeDocument();
+    void ReleaseNativeDocument();
+    RichTextDocument NativeSnapshot() const;
+    bool LoadNativeDocument(const RichTextDocument& document);
+    std::string CopySelectedText() const;
     void SyncStyledBody();
 
     PaigeRuntime& runtime_;
@@ -40,6 +58,11 @@ private:
     std::vector<RichTextDocument> redo_stack_;
     std::string clipboard_;
     std::vector<TextDiagnostic> diagnostics_;
+    std::string styled_shadow_html_;
+    std::uintptr_t native_document_ = 0;
+    void* native_view_ = nullptr;
+    float native_width_ = 720.0f;
+    float native_height_ = 520.0f;
 };
 
 }  // namespace hermes

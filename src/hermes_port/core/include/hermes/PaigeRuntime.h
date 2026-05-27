@@ -16,6 +16,10 @@ public:
     bool Initialize(std::string* error_message = nullptr);
     void Shutdown();
     bool IsAvailable() const;
+    void* NativeGlobals();
+    const void* NativeGlobals() const;
+    void* NativeMemoryGlobals();
+    const void* NativeMemoryGlobals() const;
 
 private:
     struct Impl;

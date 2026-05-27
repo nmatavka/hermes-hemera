@@ -404,9 +404,14 @@ void HaikuComposeWindow::RefreshBanner() {
         return;
     }
 
-    if (!surface_->IsAvailable()) {
+    if (!surface_->NativeBackendEnabled()) {
         banner_view_->SetText(
             "Native Paige runtime unavailable; compose is running on the guarded surface fallback.");
+        return;
+    }
+
+    if (surface_->NativeDocumentHandle() == nullptr) {
+        banner_view_->SetText("Native Paige surface is initializing.");
         return;
     }
 

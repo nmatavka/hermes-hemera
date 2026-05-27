@@ -13,6 +13,7 @@ namespace hermes::haiku_port {
 class PaigeEditorView final : public BView {
 public:
     explicit PaigeEditorView(hermes::PaigeRichTextSurface& surface);
+    ~PaigeEditorView() override;
 
     void SetChangeCallback(std::function<void()> callback);
     void ReloadFromSurface();
