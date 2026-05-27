@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+#include "hermes/ComposeMessage.h"
+
 namespace hermes {
 
 enum class MessageDeliveryState {
@@ -51,6 +53,8 @@ struct MessageRecord {
     std::int64_t created_at = 0;
     std::int64_t updated_at = 0;
     bool unread = true;
+    ComposeOptions compose_options;
+    bool use_legacy_return_receipt_header = false;
     std::vector<MessageAttachment> attachments;
 };
 

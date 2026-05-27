@@ -21,6 +21,60 @@ std::string StyledSendModeToString(const ComposePolicy& policy) {
     return "plain-only";
 }
 
+std::string PriorityToString(ComposePriority priority) {
+    switch (priority) {
+        case ComposePriority::kHighest:
+            return "highest";
+        case ComposePriority::kHigh:
+            return "high";
+        case ComposePriority::kNormal:
+            return "normal";
+        case ComposePriority::kLow:
+            return "low";
+        case ComposePriority::kLowest:
+            return "lowest";
+    }
+    return "normal";
+}
+
+ComposePriority PriorityFromString(const std::string& value) {
+    if (value == "highest") {
+        return ComposePriority::kHighest;
+    }
+    if (value == "high") {
+        return ComposePriority::kHigh;
+    }
+    if (value == "low") {
+        return ComposePriority::kLow;
+    }
+    if (value == "lowest") {
+        return ComposePriority::kLowest;
+    }
+    return ComposePriority::kNormal;
+}
+
+std::string AttachmentEncodingToString(AttachmentEncodingMode mode) {
+    switch (mode) {
+        case AttachmentEncodingMode::kMime:
+            return "mime";
+        case AttachmentEncodingMode::kBinHex:
+            return "binhex";
+        case AttachmentEncodingMode::kUuencode:
+            return "uuencode";
+    }
+    return "mime";
+}
+
+AttachmentEncodingMode AttachmentEncodingFromString(const std::string& value) {
+    if (value == "binhex") {
+        return AttachmentEncodingMode::kBinHex;
+    }
+    if (value == "uuencode") {
+        return AttachmentEncodingMode::kUuencode;
+    }
+    return AttachmentEncodingMode::kMime;
+}
+
 void WritePolicy(IniSettingsStore& metadata, const ComposePolicy& policy) {
     metadata.SetString("Policy", "ReadOnly", policy.read_only ? "1" : "0");
     metadata.SetString("Policy", "AllowStyled", policy.allow_styled ? "1" : "0");
@@ -63,6 +117,38 @@ void WritePolicy(IniSettingsStore& metadata, const ComposePolicy& policy) {
                        "BossProtectorAdditionalWarnDialog",
                        policy.boss_protector_additional_warn_dialog ? "1" : "0");
     metadata.SetString("Policy", "StyledSendMode", StyledSendModeToString(policy));
+    metadata.SetString("Policy",
+                       "DefaultPriority",
+                       PriorityToString(policy.default_options.priority));
+    metadata.SetString("Policy",
+                       "DefaultAttachmentEncoding",
+                       AttachmentEncodingToString(policy.default_options.attachment_encoding));
+    metadata.SetString("Policy",
+                       "DefaultKeepCopies",
+                       policy.default_options.keep_copies ? "1" : "0");
+    metadata.SetString("Policy",
+                       "DefaultRequestReadReceipt",
+                       policy.default_options.request_read_receipt ? "1" : "0");
+    metadata.SetString("Policy",
+                       "DefaultQuotedPrintable",
+                       policy.default_options.quoted_printable ? "1" : "0");
+    metadata.SetString("Policy",
+                       "DefaultWordWrap",
+                       policy.default_options.word_wrap ? "1" : "0");
+    metadata.SetString("Policy",
+                       "DefaultTabsInBody",
+                       policy.default_options.tabs_in_body ? "1" : "0");
+    metadata.SetString("Policy",
+                       "DefaultTextAsDocument",
+                       policy.default_options.text_as_document ? "1" : "0");
+    metadata.SetString("Policy",
+                       "ReturnReceiptLegacyHeader",
+                       policy.return_receipt_legacy_header ? "1" : "0");
+    metadata.SetString("Policy",
+                       "WordWrapOnScreen",
+                       policy.word_wrap_on_screen ? "1" : "0");
+    metadata.SetString("Policy", "WordWrapColumn", std::to_string(policy.word_wrap_column));
+    metadata.SetString("Policy", "WordWrapMax", std::to_string(policy.word_wrap_max));
 }
 
 ComposePolicy ReadPolicy(const IniSettingsStore& metadata) {
@@ -105,7 +191,61 @@ ComposePolicy ReadPolicy(const IniSettingsStore& metadata) {
     if (!policy.send_styled_only && !policy.send_plain_and_styled) {
         policy.send_plain_only = true;
     }
+    policy.default_options.priority =
+        PriorityFromString(metadata.GetString("Policy", "DefaultPriority").value_or("normal"));
+    policy.default_options.attachment_encoding = AttachmentEncodingFromString(
+        metadata.GetString("Policy", "DefaultAttachmentEncoding").value_or("mime"));
+    policy.default_options.keep_copies =
+        metadata.GetBool("Policy", "DefaultKeepCopies", false);
+    policy.default_options.request_read_receipt =
+        metadata.GetBool("Policy", "DefaultRequestReadReceipt", false);
+    policy.default_options.quoted_printable =
+        metadata.GetBool("Policy", "DefaultQuotedPrintable", true);
+    policy.default_options.word_wrap =
+        metadata.GetBool("Policy", "DefaultWordWrap", true);
+    policy.default_options.tabs_in_body =
+        metadata.GetBool("Policy", "DefaultTabsInBody", true);
+    policy.default_options.text_as_document =
+        metadata.GetBool("Policy", "DefaultTextAsDocument", false);
+    policy.return_receipt_legacy_header =
+        metadata.GetBool("Policy", "ReturnReceiptLegacyHeader", false);
+    policy.word_wrap_on_screen = metadata.GetBool("Policy", "WordWrapOnScreen", false);
+    policy.word_wrap_column = metadata.GetInt("Policy", "WordWrapColumn", 70);
+    policy.word_wrap_max = metadata.GetInt("Policy", "WordWrapMax", 80);
     return policy;
+}
+
+void WriteOptions(IniSettingsStore& metadata, const ComposeOptions& options) {
+    metadata.SetString("Options", "Priority", PriorityToString(options.priority));
+    metadata.SetString(
+        "Options", "AttachmentEncoding", AttachmentEncodingToString(options.attachment_encoding));
+    metadata.SetString("Options", "KeepCopies", options.keep_copies ? "1" : "0");
+    metadata.SetString(
+        "Options", "RequestReadReceipt", options.request_read_receipt ? "1" : "0");
+    metadata.SetString("Options", "QuotedPrintable", options.quoted_printable ? "1" : "0");
+    metadata.SetString("Options", "WordWrap", options.word_wrap ? "1" : "0");
+    metadata.SetString("Options", "TabsInBody", options.tabs_in_body ? "1" : "0");
+    metadata.SetString("Options", "TextAsDocument", options.text_as_document ? "1" : "0");
+}
+
+ComposeOptions ReadOptions(const IniSettingsStore& metadata, const ComposePolicy& policy) {
+    ComposeOptions options = policy.default_options;
+    options.priority =
+        PriorityFromString(metadata.GetString("Options", "Priority").value_or(PriorityToString(options.priority)));
+    options.attachment_encoding = AttachmentEncodingFromString(
+        metadata.GetString("Options",
+                           "AttachmentEncoding")
+            .value_or(AttachmentEncodingToString(options.attachment_encoding)));
+    options.keep_copies = metadata.GetBool("Options", "KeepCopies", options.keep_copies);
+    options.request_read_receipt =
+        metadata.GetBool("Options", "RequestReadReceipt", options.request_read_receipt);
+    options.quoted_printable =
+        metadata.GetBool("Options", "QuotedPrintable", options.quoted_printable);
+    options.word_wrap = metadata.GetBool("Options", "WordWrap", options.word_wrap);
+    options.tabs_in_body = metadata.GetBool("Options", "TabsInBody", options.tabs_in_body);
+    options.text_as_document =
+        metadata.GetBool("Options", "TextAsDocument", options.text_as_document);
+    return options;
 }
 
 bool WriteFile(const std::filesystem::path& path,
@@ -199,6 +339,7 @@ bool FilesystemDraftStore::SaveDraft(const ComposeMessage& draft, std::string* e
                            attachment.inline_disposition ? "1" : "0");
     }
     WritePolicy(metadata, draft.policy);
+    WriteOptions(metadata, draft.options);
 
     const auto attachments_directory = AttachmentsDirectory(draft.id);
     std::error_code remove_error;
@@ -283,6 +424,7 @@ std::optional<ComposeMessage> FilesystemDraftStore::GetDraft(std::string_view dr
     draft.headers.from_persona = metadata.GetString("Headers", "FromPersona").value_or("");
     draft.headers.reply_to = metadata.GetString("Headers", "ReplyTo").value_or("");
     draft.policy = ReadPolicy(metadata);
+    draft.options = ReadOptions(metadata, draft.policy);
     draft.body.plain_text = ReadFile(PlainBodyPath(draft_id));
     draft.body.html_fragment = ReadFile(HtmlBodyPath(draft_id));
     draft.body.read_only = draft.policy.read_only;

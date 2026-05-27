@@ -9,8 +9,10 @@
 #include <Alert.h>
 #include <Application.h>
 #include <Button.h>
+#include <CheckBox.h>
 #include <Entry.h>
 #include <FilePanel.h>
+#include <GroupView.h>
 #include <LayoutBuilder.h>
 #include <ListItem.h>
 #include <ListView.h>
@@ -24,9 +26,12 @@
 #include <PopUpMenu.h>
 #include <Path.h>
 #include <ScrollView.h>
+#include <Size.h>
 #include <SplitView.h>
 #include <StringItem.h>
 #include <StringView.h>
+#include <Tab.h>
+#include <TabView.h>
 #include <TextControl.h>
 
 #include "HaikuShellHost.h"
@@ -56,12 +61,18 @@ constexpr uint32_t kAddWordMessage = 'spad';
 constexpr uint32_t kReplaceCurrentMessage = 'sprp';
 constexpr uint32_t kStationeryMessage = 'stny';
 constexpr uint32_t kSignatureMessage = 'sgnt';
+constexpr uint32_t kPersonaMessage = 'pers';
+constexpr uint32_t kPriorityMessage = 'prio';
+constexpr uint32_t kEncodingMessage = 'enco';
+constexpr uint32_t kComposeOptionChangedMessage = 'copt';
 constexpr uint32_t kIdleTickMessage = 'idlt';
 constexpr uint32_t kDiagnosticMessage = 'diag';
 constexpr uint32_t kHeaderModifiedMessage = 'hedr';
 constexpr uint32_t kAddAttachmentMessage = 'atag';
 constexpr uint32_t kRemoveAttachmentMessage = 'atrm';
 constexpr uint32_t kAddAttachmentSelected = 'atrs';
+
+constexpr float kHeaderDivider = 76.0f;
 
 std::filesystem::path SourceRoot() {
 #ifdef HERMES_SOURCE_ROOT
@@ -99,14 +110,55 @@ std::string AttachmentSummary(const hermes::ComposeAttachment& attachment) {
     return stream.str();
 }
 
+void SetDivider(BTextControl* control) {
+    if (control != nullptr) {
+        control->SetDivider(kHeaderDivider);
+    }
+}
+
+const char* PriorityLabel(hermes::ComposePriority priority) {
+    switch (priority) {
+        case hermes::ComposePriority::kHighest:
+            return "Highest";
+        case hermes::ComposePriority::kHigh:
+            return "High";
+        case hermes::ComposePriority::kNormal:
+            return "Normal";
+        case hermes::ComposePriority::kLow:
+            return "Low";
+        case hermes::ComposePriority::kLowest:
+            return "Lowest";
+    }
+    return "Normal";
+}
+
+const char* EncodingLabel(hermes::AttachmentEncodingMode encoding) {
+    switch (encoding) {
+        case hermes::AttachmentEncodingMode::kMime:
+            return "MIME";
+        case hermes::AttachmentEncodingMode::kBinHex:
+            return "BinHex";
+        case hermes::AttachmentEncodingMode::kUuencode:
+            return "Uuencode";
+    }
+    return "MIME";
+}
+
+void SetCheckbox(BCheckBox* checkbox, bool enabled) {
+    if (checkbox != nullptr) {
+        checkbox->SetValue(enabled ? B_CONTROL_ON : B_CONTROL_OFF);
+    }
+}
+
 }  // namespace
 
 HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const ComposeMessage& message)
     : BWindow(BRect(140, 140, 1180, 920),
               "Compose Message",
               B_TITLED_WINDOW,
-              B_ASYNCHRONOUS_CONTROLS),
+              B_ASYNCHRONOUS_CONTROLS | B_AUTO_UPDATE_SIZE_LIMITS),
       shell_host_(shell_host),
+      gui_preferences_(GuiPreferencesFromSettings(shell_host.Settings())),
       surface_(std::make_unique<hermes::PaigeRichTextSurface>(shell_host.Runtime())),
       spell_service_(std::make_unique<hermes::HunspellSpellService>(
           SourceRoot() / "third_party" / "hunspell" / "tests" / "base_utf.aff",
@@ -157,13 +209,29 @@ HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const Compose
     cc_control_ = new BTextControl("cc-control", "Cc", "", nullptr);
     bcc_control_ = new BTextControl("bcc-control", "Bcc", "", nullptr);
     subject_control_ = new BTextControl("subject-control", "Subject", "", nullptr);
-    persona_control_ = new BTextControl("persona-control", "Persona", "", nullptr);
     reply_to_control_ = new BTextControl("reply-to-control", "Reply-To", "", nullptr);
+
     for (BTextControl* control :
-         {to_control_, cc_control_, bcc_control_, subject_control_, persona_control_, reply_to_control_}) {
+         {to_control_, cc_control_, bcc_control_, subject_control_, reply_to_control_}) {
+        SetDivider(control);
         control->SetTarget(this);
         control->SetModificationMessage(new BMessage(kHeaderModifiedMessage));
     }
+
+    auto* persona_menu = new BPopUpMenu("persona-menu");
+    persona_menu->SetRadioMode(true);
+    persona_menu->SetLabelFromMarked(true);
+    persona_field_ = new BMenuField("persona-field", "Persona", persona_menu);
+
+    auto* priority_menu = new BPopUpMenu("priority-menu");
+    priority_menu->SetRadioMode(true);
+    priority_menu->SetLabelFromMarked(true);
+    priority_field_ = new BMenuField("priority-field", "Priority", priority_menu);
+
+    auto* encoding_menu = new BPopUpMenu("encoding-menu");
+    encoding_menu->SetRadioMode(true);
+    encoding_menu->SetLabelFromMarked(true);
+    encoding_field_ = new BMenuField("encoding-field", "Encoding", encoding_menu);
 
     auto* stationery_menu = new BPopUpMenu("stationery-menu");
     stationery_menu->SetRadioMode(true);
@@ -175,7 +243,25 @@ HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const Compose
     signature_menu->SetLabelFromMarked(true);
     signature_field_ = new BMenuField("signature-field", "Signature", signature_menu);
 
-    banner_view_ = new BStringView("compose-banner", "Preparing compose window...");
+    quoted_printable_box_ =
+        new BCheckBox("quoted-printable-box", "Quoted Printable", new BMessage(kComposeOptionChangedMessage));
+    text_as_document_box_ =
+        new BCheckBox("text-document-box", "Text as Document", new BMessage(kComposeOptionChangedMessage));
+    word_wrap_box_ =
+        new BCheckBox("word-wrap-box", "Word Wrap", new BMessage(kComposeOptionChangedMessage));
+    tabs_in_body_box_ =
+        new BCheckBox("tabs-in-body-box", "Tabs in Body", new BMessage(kComposeOptionChangedMessage));
+    keep_copies_box_ =
+        new BCheckBox("keep-copies-box", "Keep Copies", new BMessage(kComposeOptionChangedMessage));
+    return_receipt_box_ =
+        new BCheckBox("return-receipt-box", "Return Receipt", new BMessage(kComposeOptionChangedMessage));
+
+    auto* queue_button = new BButton("queue-button", "Queue", new BMessage(kQueueMessage));
+    auto* save_draft_button = new BButton("save-draft-button", "Save Draft", new BMessage(kSaveDraftMessage));
+    auto* attach_button =
+        new BButton("attach-button", "Attach", new BMessage(kAddAttachmentMessage));
+
+    banner_view_ = new BStringView("compose-banner", "Compose ready.");
     diagnostics_list_ = new BListView("compose-diagnostics");
     diagnostics_list_->SetSelectionMessage(new BMessage(kDiagnosticMessage));
     attachment_list_ = new BListView("compose-attachments");
@@ -183,45 +269,98 @@ HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const Compose
     editor_view_ = new PaigeEditorView(*surface_);
     editor_view_->SetChangeCallback([this]() { HandleBodyEdited(); });
 
+    auto* editor_scroll = new BScrollView("compose-body-scroll", editor_view_, 0, true, true);
     auto* diagnostics_scroll =
         new BScrollView("compose-diagnostics-scroll", diagnostics_list_, 0, false, true);
     auto* attachment_scroll =
         new BScrollView("compose-attachments-scroll", attachment_list_, 0, false, true);
-    auto* editor_scroll = new BScrollView("compose-body-scroll", editor_view_, 0, true, true);
+
     auto* add_attachment_button =
         new BButton("compose-add-attachment", "Add Attachment", new BMessage(kAddAttachmentMessage));
     auto* remove_attachment_button =
         new BButton("compose-remove-attachment", "Remove Attachment", new BMessage(kRemoveAttachmentMessage));
 
-    auto* diagnostics_split = new BSplitView(B_VERTICAL);
-    diagnostics_split->AddChild(editor_scroll);
-    diagnostics_split->AddChild(diagnostics_scroll);
-    diagnostics_split->AddChild(attachment_scroll);
+    auto* attachments_tab = new BGroupView(B_VERTICAL);
+    BLayoutBuilder::Group<>(attachments_tab, B_VERTICAL, 8)
+        .SetInsets(B_USE_SMALL_SPACING)
+        .AddGroup(B_HORIZONTAL, 8)
+            .Add(add_attachment_button)
+            .Add(remove_attachment_button)
+            .AddGlue()
+        .End()
+        .Add(attachment_scroll);
+
+    utility_tabs_ = new BTabView("compose-utility-tabs");
+    utility_tabs_->AddTab(diagnostics_scroll);
+    if (BTab* tab = utility_tabs_->TabAt(0)) {
+        tab->SetLabel("Diagnostics");
+    }
+    utility_tabs_->AddTab(attachments_tab);
+    if (BTab* tab = utility_tabs_->TabAt(1)) {
+        tab->SetLabel("Attachments");
+    }
+
+    utility_container_ = new BGroupView(B_VERTICAL);
+    BLayoutBuilder::Group<>(utility_container_, B_VERTICAL, 0)
+        .Add(utility_tabs_);
+
+    auto* editor_split = new BSplitView(B_VERTICAL);
+    editor_split->AddChild(editor_scroll);
+    editor_split->AddChild(utility_container_);
+
+    auto* primary_headers = new BGroupView(B_VERTICAL);
+    BLayoutBuilder::Group<>(primary_headers, B_VERTICAL, 6)
+        .Add(to_control_)
+        .Add(cc_control_)
+        .Add(bcc_control_)
+        .Add(subject_control_);
+
+    auto* secondary_headers = new BGroupView(B_VERTICAL);
+    BLayoutBuilder::Group<>(secondary_headers, B_VERTICAL, 6)
+        .Add(persona_field_)
+        .Add(priority_field_)
+        .Add(encoding_field_)
+        .Add(reply_to_control_)
+        .Add(stationery_field_)
+        .Add(signature_field_);
+
+    auto* option_toggles = new BGroupView(B_VERTICAL);
+    BLayoutBuilder::Group<>(option_toggles, B_VERTICAL, 6)
+        .AddGroup(B_HORIZONTAL, 10)
+            .Add(quoted_printable_box_)
+            .Add(text_as_document_box_)
+            .Add(word_wrap_box_)
+        .End()
+        .AddGroup(B_HORIZONTAL, 10)
+            .Add(tabs_in_body_box_)
+            .Add(keep_copies_box_)
+            .Add(return_receipt_box_)
+        .End();
+
+    auto* command_strip = new BGroupView(B_HORIZONTAL, 8);
+    BLayoutBuilder::Group<>(command_strip, B_HORIZONTAL, 8)
+        .Add(queue_button)
+        .Add(save_draft_button)
+        .Add(attach_button)
+        .AddGlue();
 
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
         .Add(menu_bar)
         .AddGroup(B_VERTICAL, 8)
             .SetInsets(B_USE_WINDOW_SPACING)
-            .Add(to_control_)
-            .Add(cc_control_)
-            .Add(bcc_control_)
-            .Add(subject_control_)
-            .Add(persona_control_)
-            .Add(reply_to_control_)
-            .AddGroup(B_HORIZONTAL, 8)
-                .Add(stationery_field_)
-                .Add(signature_field_)
+            .Add(command_strip)
+            .AddGroup(B_HORIZONTAL, 12)
+                .Add(primary_headers, 2.4f)
+                .Add(secondary_headers, 1.5f)
             .End()
+            .Add(option_toggles)
             .Add(banner_view_)
-            .AddGroup(B_HORIZONTAL, 8)
-                .Add(add_attachment_button)
-                .Add(remove_attachment_button)
-            .End()
-            .Add(diagnostics_split)
+            .Add(editor_split)
         .End();
 
     PopulateMenus();
     LoadMessage(message);
+    ApplyUtilityPaneSizing();
     ResetIdleClock();
     idle_runner_ =
         std::make_unique<BMessageRunner>(BMessenger(this), new BMessage(kIdleTickMessage), 250000, -1);
@@ -274,18 +413,21 @@ void HaikuComposeWindow::MessageReceived(BMessage* message) {
             return;
 
         case kCheckDocumentMessage:
+            transient_status_message_.clear();
             controller_->CheckDocument();
             RefreshFromController(true);
             return;
 
         case kIgnoreWordMessage:
             if (controller_->IgnoreCurrentWord()) {
+                transient_status_message_.clear();
                 RefreshFromController(true);
             }
             return;
 
         case kAddWordMessage:
             if (controller_->AddCurrentWord()) {
+                transient_status_message_.clear();
                 RefreshFromController(true);
             }
             return;
@@ -293,6 +435,7 @@ void HaikuComposeWindow::MessageReceived(BMessage* message) {
         case kReplaceCurrentMessage: {
             const auto suggestions = controller_->SuggestionsForCurrentIssue();
             if (!suggestions.empty() && controller_->ReplaceCurrent(suggestions.front())) {
+                transient_status_message_.clear();
                 RefreshFromController(true);
             }
             return;
@@ -327,7 +470,9 @@ void HaikuComposeWindow::MessageReceived(BMessage* message) {
                 errors += error_message;
             }
             if (added) {
+                transient_status_message_ = "Attachment list updated.";
                 RefreshFromController(false);
+                utility_tabs_->Select(1);
             }
             if (!errors.empty()) {
                 BAlert("add-attachment-alert", errors.c_str(), "OK")->Go();
@@ -339,6 +484,7 @@ void HaikuComposeWindow::MessageReceived(BMessage* message) {
             const char* name = nullptr;
             if (message->FindString("name", &name) == B_OK && name != nullptr &&
                 controller_->ApplyStationery(name)) {
+                transient_status_message_ = "Applied stationery.";
                 RefreshFromController(true);
             }
             return;
@@ -348,10 +494,27 @@ void HaikuComposeWindow::MessageReceived(BMessage* message) {
             const char* name = nullptr;
             if (message->FindString("name", &name) == B_OK && name != nullptr &&
                 controller_->ApplySignature(name)) {
+                transient_status_message_ = "Updated signature.";
                 RefreshFromController(true);
             }
             return;
         }
+
+        case kPersonaMessage: {
+            const char* persona_id = nullptr;
+            if (message->FindString("persona_id", &persona_id) == B_OK && persona_id != nullptr &&
+                controller_->UpdateHeader(ComposeHeaderField::kFromPersona, persona_id)) {
+                transient_status_message_.clear();
+                RefreshFromController(false);
+            }
+            return;
+        }
+
+        case kPriorityMessage:
+        case kEncodingMessage:
+        case kComposeOptionChangedMessage:
+            UpdateControllerFromControls();
+            return;
 
         case kDiagnosticMessage:
             NavigateToDiagnostic(diagnostics_list_->CurrentSelection());
@@ -367,6 +530,7 @@ void HaikuComposeWindow::MessageReceived(BMessage* message) {
             const auto checks =
                 controller_->ServiceAutomaticChecks(std::chrono::milliseconds(idle_micros / 1000));
             if (checks.spell_checked || checks.mood_checked || checks.boss_protector_checked) {
+                transient_status_message_.clear();
                 RefreshFromController(true);
             }
             return;
@@ -379,11 +543,43 @@ void HaikuComposeWindow::MessageReceived(BMessage* message) {
 }
 
 bool HaikuComposeWindow::QuitRequested() {
+    PersistGuiPreferences();
     Hide();
     return true;
 }
 
 void HaikuComposeWindow::PopulateMenus() {
+    BMenu* persona_menu = persona_field_->Menu();
+    persona_menu->RemoveItems(0, persona_menu->CountItems(), true);
+    for (const auto& account : shell_host_.Accounts().Accounts()) {
+        const std::string label = account.display_name.empty() ? account.id : account.display_name;
+        auto* item_message = new BMessage(kPersonaMessage);
+        item_message->AddString("persona_id", account.id.c_str());
+        persona_menu->AddItem(new BMenuItem(label.c_str(), item_message));
+    }
+
+    BMenu* priority_menu = priority_field_->Menu();
+    priority_menu->RemoveItems(0, priority_menu->CountItems(), true);
+    for (const auto priority : {hermes::ComposePriority::kHighest,
+                                hermes::ComposePriority::kHigh,
+                                hermes::ComposePriority::kNormal,
+                                hermes::ComposePriority::kLow,
+                                hermes::ComposePriority::kLowest}) {
+        auto* item_message = new BMessage(kPriorityMessage);
+        item_message->AddInt32("priority", static_cast<int32>(priority));
+        priority_menu->AddItem(new BMenuItem(PriorityLabel(priority), item_message));
+    }
+
+    BMenu* encoding_menu = encoding_field_->Menu();
+    encoding_menu->RemoveItems(0, encoding_menu->CountItems(), true);
+    for (const auto encoding : {hermes::AttachmentEncodingMode::kMime,
+                                hermes::AttachmentEncodingMode::kBinHex,
+                                hermes::AttachmentEncodingMode::kUuencode}) {
+        auto* item_message = new BMessage(kEncodingMessage);
+        item_message->AddInt32("encoding", static_cast<int32>(encoding));
+        encoding_menu->AddItem(new BMenuItem(EncodingLabel(encoding), item_message));
+    }
+
     BMenu* stationery_menu = stationery_field_->Menu();
     stationery_menu->RemoveItems(0, stationery_menu->CountItems(), true);
     for (const auto& stationery : controller_->AvailableStationery()) {
@@ -423,10 +619,49 @@ void HaikuComposeWindow::UpdateControllerFromControls() {
     update(ComposeHeaderField::kCc, cc_control_);
     update(ComposeHeaderField::kBcc, bcc_control_);
     update(ComposeHeaderField::kSubject, subject_control_);
-    update(ComposeHeaderField::kFromPersona, persona_control_);
     update(ComposeHeaderField::kReplyTo, reply_to_control_);
 
+    hermes::ComposeOptions options = controller_->Options();
+    if (BMenu* menu = priority_field_->Menu()) {
+        if (BMenuItem* item = menu->FindMarked()) {
+            int32 value = static_cast<int32>(options.priority);
+            if (item->Message() != nullptr && item->Message()->FindInt32("priority", &value) == B_OK) {
+                options.priority = static_cast<hermes::ComposePriority>(value);
+            }
+        }
+    }
+    if (BMenu* menu = encoding_field_->Menu()) {
+        if (BMenuItem* item = menu->FindMarked()) {
+            int32 value = static_cast<int32>(options.attachment_encoding);
+            if (item->Message() != nullptr && item->Message()->FindInt32("encoding", &value) == B_OK) {
+                options.attachment_encoding = static_cast<hermes::AttachmentEncodingMode>(value);
+            }
+        }
+    }
+    options.quoted_printable =
+        quoted_printable_box_ != nullptr && quoted_printable_box_->Value() == B_CONTROL_ON;
+    options.text_as_document =
+        text_as_document_box_ != nullptr && text_as_document_box_->Value() == B_CONTROL_ON;
+    options.word_wrap = word_wrap_box_ != nullptr && word_wrap_box_->Value() == B_CONTROL_ON;
+    options.tabs_in_body =
+        tabs_in_body_box_ != nullptr && tabs_in_body_box_->Value() == B_CONTROL_ON;
+    options.keep_copies = keep_copies_box_ != nullptr && keep_copies_box_->Value() == B_CONTROL_ON;
+    options.request_read_receipt =
+        return_receipt_box_ != nullptr && return_receipt_box_->Value() == B_CONTROL_ON;
+    if (controller_->Options().priority != options.priority ||
+        controller_->Options().attachment_encoding != options.attachment_encoding ||
+        controller_->Options().quoted_printable != options.quoted_printable ||
+        controller_->Options().text_as_document != options.text_as_document ||
+        controller_->Options().word_wrap != options.word_wrap ||
+        controller_->Options().tabs_in_body != options.tabs_in_body ||
+        controller_->Options().keep_copies != options.keep_copies ||
+        controller_->Options().request_read_receipt != options.request_read_receipt) {
+        controller_->UpdateOptions(options);
+        changed = true;
+    }
+
     if (changed) {
+        transient_status_message_.clear();
         ResetIdleClock();
         RefreshDiagnostics();
         RefreshBanner();
@@ -438,7 +673,6 @@ void HaikuComposeWindow::SyncHeaderControlsFromController() {
     cc_control_->SetText(controller_->HeaderValue(ComposeHeaderField::kCc).c_str());
     bcc_control_->SetText(controller_->HeaderValue(ComposeHeaderField::kBcc).c_str());
     subject_control_->SetText(controller_->HeaderValue(ComposeHeaderField::kSubject).c_str());
-    persona_control_->SetText(controller_->HeaderValue(ComposeHeaderField::kFromPersona).c_str());
     reply_to_control_->SetText(controller_->HeaderValue(ComposeHeaderField::kReplyTo).c_str());
 }
 
@@ -455,8 +689,51 @@ void HaikuComposeWindow::SyncMenuFieldsFromController() {
         }
     };
 
+    if (BMenu* persona_menu = persona_field_->Menu()) {
+        for (int32 index = 0; index < persona_menu->CountItems(); ++index) {
+            if (BMenuItem* item = persona_menu->ItemAt(index)) {
+                const char* persona_id = nullptr;
+                const bool marked = item->Message() != nullptr &&
+                                    item->Message()->FindString("persona_id", &persona_id) == B_OK &&
+                                    persona_id != nullptr && snapshot.headers.from_persona == persona_id;
+                item->SetMarked(marked);
+            }
+        }
+    }
+
+    if (BMenu* priority_menu = priority_field_->Menu()) {
+        for (int32 index = 0; index < priority_menu->CountItems(); ++index) {
+            if (BMenuItem* item = priority_menu->ItemAt(index)) {
+                int32 value = 0;
+                const bool marked = item->Message() != nullptr &&
+                                    item->Message()->FindInt32("priority", &value) == B_OK &&
+                                    snapshot.options.priority == static_cast<hermes::ComposePriority>(value);
+                item->SetMarked(marked);
+            }
+        }
+    }
+
+    if (BMenu* encoding_menu = encoding_field_->Menu()) {
+        for (int32 index = 0; index < encoding_menu->CountItems(); ++index) {
+            if (BMenuItem* item = encoding_menu->ItemAt(index)) {
+                int32 value = 0;
+                const bool marked = item->Message() != nullptr &&
+                                    item->Message()->FindInt32("encoding", &value) == B_OK &&
+                                    snapshot.options.attachment_encoding ==
+                                        static_cast<hermes::AttachmentEncodingMode>(value);
+                item->SetMarked(marked);
+            }
+        }
+    }
+
     mark_item(stationery_field_->Menu(), snapshot.stationery_name);
     mark_item(signature_field_->Menu(), snapshot.signature_name);
+    SetCheckbox(quoted_printable_box_, snapshot.options.quoted_printable);
+    SetCheckbox(text_as_document_box_, snapshot.options.text_as_document);
+    SetCheckbox(word_wrap_box_, snapshot.options.word_wrap);
+    SetCheckbox(tabs_in_body_box_, snapshot.options.tabs_in_body);
+    SetCheckbox(keep_copies_box_, snapshot.options.keep_copies);
+    SetCheckbox(return_receipt_box_, snapshot.options.request_read_receipt);
 }
 
 void HaikuComposeWindow::RefreshDiagnostics() {
@@ -477,21 +754,18 @@ void HaikuComposeWindow::RefreshAttachments() {
 void HaikuComposeWindow::RefreshBanner() {
     const auto banner = controller_->StatusBanner();
     if (banner) {
+        transient_status_message_.clear();
         banner_view_->SetText((banner->title + ": " + banner->message).c_str());
         return;
     }
-
-    if (!surface_->NativeBackendEnabled()) {
-        banner_view_->SetText(
-            "Native Paige runtime unavailable; compose is running on the guarded surface fallback.");
+    if (!transient_status_message_.empty()) {
+        banner_view_->SetText(transient_status_message_.c_str());
         return;
     }
-
-    if (surface_->NativeDocumentHandle() == nullptr) {
-        banner_view_->SetText("Native Paige surface is initializing.");
+    if (controller_->IsDirty()) {
+        banner_view_->SetText("Draft has unsaved changes.");
         return;
     }
-
     banner_view_->SetText("Compose ready.");
 }
 
@@ -514,6 +788,7 @@ void HaikuComposeWindow::ResetIdleClock() {
 }
 
 void HaikuComposeWindow::HandleBodyEdited() {
+    transient_status_message_.clear();
     controller_->MarkBodyEdited();
     ResetIdleClock();
     RefreshFromController(true);
@@ -540,6 +815,7 @@ void HaikuComposeWindow::HandleRemoveAttachment() {
         return;
     }
     if (controller_->RemoveAttachment(static_cast<std::size_t>(selection))) {
+        transient_status_message_ = "Removed selected attachment.";
         RefreshFromController(false);
     }
 }
@@ -556,7 +832,8 @@ void HaikuComposeWindow::HandleSaveDraft() {
     }
 
     shell_host_.ReloadWorkspace();
-    banner_view_->SetText("Draft saved.");
+    transient_status_message_ = "Draft saved.";
+    RefreshBanner();
 }
 
 void HaikuComposeWindow::HandleQueue(bool allow_warnings) {
@@ -580,12 +857,13 @@ void HaikuComposeWindow::HandleQueue(bool allow_warnings) {
                 : !result.validation.blocking_errors.empty() ? JoinLines(result.validation.blocking_errors)
                                                              : "Message was not queued.";
         BAlert("queue-alert", error.c_str(), "OK")->Go();
+        transient_status_message_.clear();
         RefreshFromController(true);
         return;
     }
 
     shell_host_.ReloadWorkspace();
-    banner_view_->SetText("Message queued in Out.");
+    transient_status_message_ = "Message queued in Out.";
     RefreshFromController(true);
 }
 
@@ -606,4 +884,30 @@ void HaikuComposeWindow::NavigateToDiagnostic(int32 index) {
 
     subject_control_->MakeFocus(true);
 }
+
+void HaikuComposeWindow::PersistGuiPreferences() {
+    if (utility_tabs_ != nullptr) {
+        gui_preferences_.compose_utility_pane_selected_tab = utility_tabs_->Selection();
+        gui_preferences_.compose_utility_pane_height =
+            std::max(96, static_cast<int>(utility_tabs_->Frame().Height()));
+    }
+    ApplyGuiPreferencesToSettings(gui_preferences_, shell_host_.Settings());
+    std::string ignored;
+    shell_host_.PersistSettings(&ignored);
+}
+
+void HaikuComposeWindow::ApplyUtilityPaneSizing() {
+    if (utility_container_ == nullptr || utility_tabs_ == nullptr) {
+        return;
+    }
+    utility_container_->SetExplicitMinSize(
+        BSize(B_SIZE_UNSET, std::max(96, gui_preferences_.compose_utility_pane_height)));
+    if (utility_tabs_->CountTabs() > 0) {
+        const int32 max_index = std::max<int32>(0, utility_tabs_->CountTabs() - 1);
+        const int32 selection = std::max<int32>(
+            0, std::min<int32>(gui_preferences_.compose_utility_pane_selected_tab, max_index));
+        utility_tabs_->Select(selection);
+    }
+}
+
 }  // namespace hermes::haiku_port

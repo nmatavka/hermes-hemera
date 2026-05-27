@@ -75,6 +75,60 @@ MessageDeliveryState DeliveryStateFromString(std::string value) {
     return MessageDeliveryState::kReceived;
 }
 
+std::string PriorityToString(ComposePriority priority) {
+    switch (priority) {
+        case ComposePriority::kHighest:
+            return "highest";
+        case ComposePriority::kHigh:
+            return "high";
+        case ComposePriority::kNormal:
+            return "normal";
+        case ComposePriority::kLow:
+            return "low";
+        case ComposePriority::kLowest:
+            return "lowest";
+    }
+    return "normal";
+}
+
+ComposePriority PriorityFromString(const std::string& value) {
+    if (value == "highest") {
+        return ComposePriority::kHighest;
+    }
+    if (value == "high") {
+        return ComposePriority::kHigh;
+    }
+    if (value == "low") {
+        return ComposePriority::kLow;
+    }
+    if (value == "lowest") {
+        return ComposePriority::kLowest;
+    }
+    return ComposePriority::kNormal;
+}
+
+std::string AttachmentEncodingToString(AttachmentEncodingMode mode) {
+    switch (mode) {
+        case AttachmentEncodingMode::kMime:
+            return "mime";
+        case AttachmentEncodingMode::kBinHex:
+            return "binhex";
+        case AttachmentEncodingMode::kUuencode:
+            return "uuencode";
+    }
+    return "mime";
+}
+
+AttachmentEncodingMode AttachmentEncodingFromString(const std::string& value) {
+    if (value == "binhex") {
+        return AttachmentEncodingMode::kBinHex;
+    }
+    if (value == "uuencode") {
+        return AttachmentEncodingMode::kUuencode;
+    }
+    return AttachmentEncodingMode::kMime;
+}
+
 std::string SanitizeFilename(std::string value) {
     if (value.empty()) {
         return "attachment.bin";
@@ -285,6 +339,20 @@ bool FilesystemMessageStore::SaveMessage(const MessageRecord& message, std::stri
     output << "X-Hermes-Created-At: " << message.created_at << '\n';
     output << "X-Hermes-Updated-At: " << message.updated_at << '\n';
     output << "X-Hermes-Unread: " << (message.unread ? "1" : "0") << '\n';
+    output << "X-Hermes-Priority: " << PriorityToString(message.compose_options.priority) << '\n';
+    output << "X-Hermes-Attachment-Encoding: "
+           << AttachmentEncodingToString(message.compose_options.attachment_encoding) << '\n';
+    output << "X-Hermes-Keep-Copies: " << (message.compose_options.keep_copies ? "1" : "0") << '\n';
+    output << "X-Hermes-Request-Read-Receipt: "
+           << (message.compose_options.request_read_receipt ? "1" : "0") << '\n';
+    output << "X-Hermes-Quoted-Printable: "
+           << (message.compose_options.quoted_printable ? "1" : "0") << '\n';
+    output << "X-Hermes-Word-Wrap: " << (message.compose_options.word_wrap ? "1" : "0") << '\n';
+    output << "X-Hermes-Tabs-In-Body: " << (message.compose_options.tabs_in_body ? "1" : "0") << '\n';
+    output << "X-Hermes-Text-As-Document: "
+           << (message.compose_options.text_as_document ? "1" : "0") << '\n';
+    output << "X-Hermes-Legacy-Receipt-Header: "
+           << (message.use_legacy_return_receipt_header ? "1" : "0") << '\n';
     for (const auto& attachment : attachments) {
         output << "X-Hermes-Attachment: " << SerializeAttachment(attachment) << '\n';
     }
@@ -542,6 +610,25 @@ std::optional<MessageRecord> FilesystemMessageStore::ReadMessageFile(const std::
                 }
             } else if (line.rfind("X-Hermes-Unread:", 0) == 0) {
                 message.unread = HeaderValue(line) != "0";
+            } else if (line.rfind("X-Hermes-Priority:", 0) == 0) {
+                message.compose_options.priority = PriorityFromString(HeaderValue(line));
+            } else if (line.rfind("X-Hermes-Attachment-Encoding:", 0) == 0) {
+                message.compose_options.attachment_encoding =
+                    AttachmentEncodingFromString(HeaderValue(line));
+            } else if (line.rfind("X-Hermes-Keep-Copies:", 0) == 0) {
+                message.compose_options.keep_copies = HeaderValue(line) != "0";
+            } else if (line.rfind("X-Hermes-Request-Read-Receipt:", 0) == 0) {
+                message.compose_options.request_read_receipt = HeaderValue(line) != "0";
+            } else if (line.rfind("X-Hermes-Quoted-Printable:", 0) == 0) {
+                message.compose_options.quoted_printable = HeaderValue(line) != "0";
+            } else if (line.rfind("X-Hermes-Word-Wrap:", 0) == 0) {
+                message.compose_options.word_wrap = HeaderValue(line) != "0";
+            } else if (line.rfind("X-Hermes-Tabs-In-Body:", 0) == 0) {
+                message.compose_options.tabs_in_body = HeaderValue(line) != "0";
+            } else if (line.rfind("X-Hermes-Text-As-Document:", 0) == 0) {
+                message.compose_options.text_as_document = HeaderValue(line) != "0";
+            } else if (line.rfind("X-Hermes-Legacy-Receipt-Header:", 0) == 0) {
+                message.use_legacy_return_receipt_header = HeaderValue(line) != "0";
             } else if (line.rfind("X-Hermes-Attachment:", 0) == 0) {
                 if (const auto attachment = ParseAttachment(HeaderValue(line))) {
                     message.attachments.push_back(*attachment);

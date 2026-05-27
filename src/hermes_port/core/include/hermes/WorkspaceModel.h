@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -11,6 +12,11 @@ struct MailboxSummary {
     std::string id;
     std::string display_name;
     std::size_t unread_count = 0;
+    std::string parent_id;
+    std::string account_id;
+    std::string protocol;
+    bool system_mailbox = false;
+    bool is_remote = false;
 };
 
 struct MessageSummary {
@@ -21,6 +27,12 @@ struct MessageSummary {
     std::string preview;
     bool unread = true;
     std::size_t attachment_count = 0;
+    std::string status;
+    std::string priority;
+    bool attachments_omitted = false;
+    bool download_complete = true;
+    std::size_t size = 0;
+    std::int64_t timestamp = 0;
 };
 
 struct AttachmentSummary {

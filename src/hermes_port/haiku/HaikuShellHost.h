@@ -90,12 +90,14 @@ public:
 
     void ShowMainWindow();
     void ReloadWorkspace();
+    bool PersistSettings(std::string* error_message = nullptr);
 
 private:
     void LoadBootstrapAccounts();
     void ShowComposeWindow(const ComposeMessage& message);
     void EnsureWorkspaceDirectories();
     std::filesystem::path DataRoot() const;
+    std::filesystem::path SettingsPath() const;
 
     std::unique_ptr<IniSettingsStore> settings_;
     std::unique_ptr<InMemoryWorkspaceModel> workspace_;

@@ -11,6 +11,13 @@ int main() {
     BApplication app("application/x-vnd.hermes-hemera-workflow-smoke");
 
     hermes::haiku_port::HaikuShellHost shell_host;
+    shell_host.Settings().SetString("Settings", "MailboxPreviewPane", "1");
+    shell_host.Settings().SetString("Settings", "SetPreviewRead", "1");
+    shell_host.Settings().SetString("Settings", "SetPreviewReadSeconds", "1");
+    shell_host.Settings().SetString("Settings", "TaskStatusBringToFront", "1");
+    shell_host.Settings().SetString("Settings", "TaskErrorBringToFront", "1");
+    shell_host.Settings().SetString("Settings", "HaikuUtilityPaneOpen", "1");
+    shell_host.Settings().SetString("Settings", "HaikuUtilityPaneSelectedTab", "1");
     shell_host.ShowMainWindow();
 
     std::error_code ignored;

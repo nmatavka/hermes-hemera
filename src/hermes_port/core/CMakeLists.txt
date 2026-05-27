@@ -14,6 +14,7 @@ add_library(
     src/FilesystemSignatureStore.cpp
     src/FilesystemStationeryStore.cpp
     src/FlatFileNicknameStore.cpp
+    src/GuiPreferences.cpp
     src/HeuristicJunkScorer.cpp
     src/HunspellSpellService.cpp
     src/InMemoryWorkspaceModel.cpp
@@ -28,6 +29,7 @@ add_library(
     src/SyncStateStore.cpp
     src/SimpleSearchService.cpp
     src/SocketTransportService.cpp
+    src/ToolbarConfiguration.cpp
 )
 
 add_library(hermes::port_core ALIAS hermes_port_core)

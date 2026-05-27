@@ -25,6 +25,7 @@ add_executable(
     DraftStoreTests.cpp
     FilterEngineTests.cpp
     HelpCatalogTests.cpp
+    GuiPreferencesTests.cpp
     ImportServiceTests.cpp
     TestMain.cpp
     RendererModeTests.cpp
@@ -38,6 +39,7 @@ add_executable(
     ReleaseGateTests.cpp
     SearchAndJunkTests.cpp
     SignatureStoreTests.cpp
+    ToolbarConfigurationTests.cpp
     TransportServiceTests.cpp
     WorkspaceModelTests.cpp
 )

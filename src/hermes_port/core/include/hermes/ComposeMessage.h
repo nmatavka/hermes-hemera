@@ -17,6 +17,31 @@ enum class StyledSendMode {
     kStyledTextOnly,
 };
 
+enum class ComposePriority : int {
+    kHighest = 1,
+    kHigh = 2,
+    kNormal = 3,
+    kLow = 4,
+    kLowest = 5,
+};
+
+enum class AttachmentEncodingMode {
+    kMime,
+    kBinHex,
+    kUuencode,
+};
+
+struct ComposeOptions {
+    ComposePriority priority = ComposePriority::kNormal;
+    AttachmentEncodingMode attachment_encoding = AttachmentEncodingMode::kMime;
+    bool keep_copies = false;
+    bool request_read_receipt = false;
+    bool quoted_printable = true;
+    bool word_wrap = true;
+    bool tabs_in_body = true;
+    bool text_as_document = false;
+};
+
 struct ComposeHeaders {
     std::string to;
     std::string cc;
@@ -51,6 +76,11 @@ struct ComposePolicy {
     bool boss_protector_additional_warn_dialog = false;
     bool send_plain_and_styled = true;
     bool send_styled_only = false;
+    ComposeOptions default_options;
+    bool return_receipt_legacy_header = false;
+    bool word_wrap_on_screen = false;
+    int word_wrap_column = 70;
+    int word_wrap_max = 80;
 };
 
 struct ManagedSignatureBlock {
@@ -79,6 +109,7 @@ struct ComposeMessage {
     std::string stationery_name;
     std::string signature_name;
     ManagedSignatureBlock managed_signature;
+    ComposeOptions options;
 };
 
 ComposePolicy ComposePolicyFromSettings(const SettingsStore& settings, std::string_view section = "Settings");

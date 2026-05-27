@@ -21,11 +21,26 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
     draft.policy.mood_watch_enabled = true;
     draft.policy.boss_protector_warn_inside_domains = true;
     draft.policy.boss_protector_inside_domains = "corp.example";
+    draft.policy.default_options.priority = hermes::ComposePriority::kHigh;
+    draft.policy.default_options.attachment_encoding = hermes::AttachmentEncodingMode::kBinHex;
+    draft.policy.default_options.keep_copies = true;
+    draft.policy.return_receipt_legacy_header = true;
+    draft.policy.word_wrap_on_screen = true;
+    draft.policy.word_wrap_column = 72;
+    draft.policy.word_wrap_max = 88;
     draft.body.plain_text = "Plain body";
     draft.body.html_fragment = "<p>Styled body</p>";
     draft.stationery_name = "FollowUp";
     draft.signature_name = "Standard";
     draft.managed_signature = {true, "Standard", 12, 8, "Signature"};
+    draft.options.priority = hermes::ComposePriority::kLowest;
+    draft.options.attachment_encoding = hermes::AttachmentEncodingMode::kUuencode;
+    draft.options.keep_copies = true;
+    draft.options.request_read_receipt = true;
+    draft.options.quoted_printable = false;
+    draft.options.word_wrap = false;
+    draft.options.tabs_in_body = false;
+    draft.options.text_as_document = true;
 
     std::string error_message;
     HERMES_CHECK(store.SaveDraft(draft, &error_message));
@@ -39,10 +54,26 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
     HERMES_CHECK_EQ(loaded->policy.default_stationery_name, std::string("FollowUp"));
     HERMES_CHECK(loaded->policy.boss_protector_warn_inside_domains);
     HERMES_CHECK_EQ(loaded->policy.boss_protector_inside_domains, std::string("corp.example"));
+    HERMES_CHECK_EQ(loaded->policy.default_options.priority, hermes::ComposePriority::kHigh);
+    HERMES_CHECK_EQ(loaded->policy.default_options.attachment_encoding,
+                    hermes::AttachmentEncodingMode::kBinHex);
+    HERMES_CHECK(loaded->policy.default_options.keep_copies);
+    HERMES_CHECK(loaded->policy.return_receipt_legacy_header);
+    HERMES_CHECK(loaded->policy.word_wrap_on_screen);
+    HERMES_CHECK_EQ(loaded->policy.word_wrap_column, 72);
+    HERMES_CHECK_EQ(loaded->policy.word_wrap_max, 88);
     HERMES_CHECK(loaded->managed_signature.attached);
     HERMES_CHECK_EQ(loaded->managed_signature.name, std::string("Standard"));
     HERMES_CHECK_EQ(loaded->managed_signature.start, static_cast<std::size_t>(12));
     HERMES_CHECK_EQ(loaded->managed_signature.length, static_cast<std::size_t>(8));
+    HERMES_CHECK_EQ(loaded->options.priority, hermes::ComposePriority::kLowest);
+    HERMES_CHECK_EQ(loaded->options.attachment_encoding, hermes::AttachmentEncodingMode::kUuencode);
+    HERMES_CHECK(loaded->options.keep_copies);
+    HERMES_CHECK(loaded->options.request_read_receipt);
+    HERMES_CHECK(!loaded->options.quoted_printable);
+    HERMES_CHECK(!loaded->options.word_wrap);
+    HERMES_CHECK(!loaded->options.tabs_in_body);
+    HERMES_CHECK(loaded->options.text_as_document);
 
     const auto drafts = store.ListDrafts();
     HERMES_CHECK_EQ(drafts.size(), static_cast<std::size_t>(1));
@@ -63,6 +94,8 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsAttachmentCopies) {
     draft.id = "draft-attachment";
     draft.body.plain_text = "See attachment.";
     draft.attachments.push_back({"brief.txt", source_attachment, "text/plain", 15, "cid-1", false});
+    draft.options.keep_copies = true;
+    draft.options.request_read_receipt = true;
 
     std::string error_message;
     HERMES_CHECK(store.SaveDraft(draft, &error_message));
@@ -72,4 +105,6 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsAttachmentCopies) {
     HERMES_CHECK_EQ(loaded->attachments.size(), static_cast<std::size_t>(1));
     HERMES_CHECK_EQ(loaded->attachments.front().display_name, std::string("brief.txt"));
     HERMES_CHECK(std::filesystem::exists(loaded->attachments.front().source_path));
+    HERMES_CHECK(loaded->options.keep_copies);
+    HERMES_CHECK(loaded->options.request_read_receipt);
 }

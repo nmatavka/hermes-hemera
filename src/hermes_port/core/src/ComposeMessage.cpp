@@ -28,6 +28,17 @@ std::string NormalizeLegacyDefaultValue(std::string value) {
     return value;
 }
 
+AttachmentEncodingMode AttachmentEncodingFromSettings(const SettingsStore& settings,
+                                                      std::string_view section) {
+    if (settings.GetBool(section, "SendBinHex", false)) {
+        return AttachmentEncodingMode::kBinHex;
+    }
+    if (settings.GetBool(section, "SendUuencode", false)) {
+        return AttachmentEncodingMode::kUuencode;
+    }
+    return AttachmentEncodingMode::kMime;
+}
+
 }  // namespace
 
 ComposePolicy ComposePolicyFromSettings(const SettingsStore& settings, std::string_view section) {
@@ -66,6 +77,17 @@ ComposePolicy ComposePolicyFromSettings(const SettingsStore& settings, std::stri
         settings.GetString(section, "BPInsideDomains").value_or("");
     policy.boss_protector_additional_warn_dialog =
         settings.GetBool(section, "BPAdditionalWarnDialog", false);
+    policy.default_options.attachment_encoding = AttachmentEncodingFromSettings(settings, section);
+    policy.default_options.quoted_printable = settings.GetBool(section, "UseQP", true);
+    policy.default_options.word_wrap = settings.GetBool(section, "WordWrap", true);
+    policy.default_options.tabs_in_body = settings.GetBool(section, "TabsInBody", true);
+    policy.default_options.keep_copies = settings.GetBool(section, "KeepCopies", true);
+    policy.default_options.request_read_receipt = false;
+    policy.default_options.text_as_document = false;
+    policy.return_receipt_legacy_header = settings.GetBool(section, "ReturnReceiptFlag", false);
+    policy.word_wrap_on_screen = settings.GetBool(section, "WordWrapOnScreen", false);
+    policy.word_wrap_column = std::max(20, settings.GetInt(section, "WordWrapColumn", 70));
+    policy.word_wrap_max = std::max(policy.word_wrap_column, settings.GetInt(section, "WordWrapMax", 80));
 
     if (policy.read_only) {
         policy.allow_styled = false;

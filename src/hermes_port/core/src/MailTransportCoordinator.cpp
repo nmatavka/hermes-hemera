@@ -214,6 +214,54 @@ std::string DecodeQuotedPrintable(const std::string& input) {
     return decoded;
 }
 
+std::string EncodeQuotedPrintable(std::string_view input) {
+    auto hex = [](unsigned char value) {
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        std::string out;
+        out.push_back('=');
+        out.push_back(kHex[(value >> 4) & 0x0F]);
+        out.push_back(kHex[value & 0x0F]);
+        return out;
+    };
+
+    std::string encoded;
+    std::size_t line_length = 0;
+    auto append_chunk = [&](std::string_view chunk) {
+        if (line_length + chunk.size() > 73) {
+            encoded += "=\r\n";
+            line_length = 0;
+        }
+        encoded.append(chunk);
+        line_length += chunk.size();
+    };
+
+    for (std::size_t index = 0; index < input.size(); ++index) {
+        const unsigned char ch = static_cast<unsigned char>(input[index]);
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n') {
+            encoded += "\r\n";
+            line_length = 0;
+            continue;
+        }
+
+        const bool printable = (ch >= 33 && ch <= 60) || (ch >= 62 && ch <= 126);
+        const bool trailing_space =
+            (ch == ' ' || ch == '\t') &&
+            (index + 1 == input.size() || input[index + 1] == '\n' || input[index + 1] == '\r');
+        if (printable && !trailing_space) {
+            append_chunk(std::string_view(reinterpret_cast<const char*>(&ch), 1));
+            continue;
+        }
+
+        const std::string escaped = hex(ch);
+        append_chunk(escaped);
+    }
+
+    return encoded;
+}
+
 std::string HexEncode(const unsigned char* data, std::size_t size) {
     static constexpr char kHex[] = "0123456789abcdef";
     std::string output;
@@ -576,20 +624,59 @@ std::string ReadAttachmentBytes(const MessageAttachment& attachment) {
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+std::string PriorityHeaderValue(ComposePriority priority) {
+    switch (priority) {
+        case ComposePriority::kHighest:
+            return "1 (Highest)";
+        case ComposePriority::kHigh:
+            return "2 (High)";
+        case ComposePriority::kNormal:
+            return "3 (Normal)";
+        case ComposePriority::kLow:
+            return "4 (Low)";
+        case ComposePriority::kLowest:
+            return "5 (Lowest)";
+    }
+    return "3 (Normal)";
+}
+
+std::string ImportanceHeaderValue(ComposePriority priority) {
+    switch (priority) {
+        case ComposePriority::kHighest:
+        case ComposePriority::kHigh:
+            return "high";
+        case ComposePriority::kLow:
+        case ComposePriority::kLowest:
+            return "low";
+        case ComposePriority::kNormal:
+            return "normal";
+    }
+    return "normal";
+}
+
+std::string EncodeTextBody(std::string_view body, bool quoted_printable) {
+    return quoted_printable ? EncodeQuotedPrintable(body) : std::string(body);
+}
+
 std::string BuildBodyPart(const MessageRecord& message) {
     std::ostringstream output;
+    const bool quoted_printable = message.compose_options.quoted_printable;
+    const std::string body_encoding = quoted_printable ? "quoted-printable" : "8bit";
     if (!message.html_body.empty()) {
         output << "Content-Type: multipart/alternative; boundary=\"hermes-alternative\"\r\n\r\n";
         output << "--hermes-alternative\r\n";
-        output << "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
-        output << message.plain_text_body << "\r\n";
+        output << "Content-Type: text/plain; charset=UTF-8\r\n";
+        output << "Content-Transfer-Encoding: " << body_encoding << "\r\n\r\n";
+        output << EncodeTextBody(message.plain_text_body, quoted_printable) << "\r\n";
         output << "--hermes-alternative\r\n";
-        output << "Content-Type: text/html; charset=UTF-8\r\n\r\n";
-        output << message.html_body << "\r\n";
+        output << "Content-Type: text/html; charset=UTF-8\r\n";
+        output << "Content-Transfer-Encoding: " << body_encoding << "\r\n\r\n";
+        output << EncodeTextBody(message.html_body, quoted_printable) << "\r\n";
         output << "--hermes-alternative--\r\n";
     } else {
-        output << "Content-Type: text/plain; charset=UTF-8\r\n\r\n";
-        output << message.plain_text_body << "\r\n";
+        output << "Content-Type: text/plain; charset=UTF-8\r\n";
+        output << "Content-Transfer-Encoding: " << body_encoding << "\r\n\r\n";
+        output << EncodeTextBody(message.plain_text_body, quoted_printable) << "\r\n";
     }
     return output.str();
 }
@@ -599,6 +686,14 @@ std::string BuildSmtpMessage(const MessageRecord& message) {
     output << "Subject: " << message.subject << "\r\n";
     output << "From: " << message.sender << "\r\n";
     output << "To: " << message.recipients << "\r\n";
+    output << "X-Priority: " << PriorityHeaderValue(message.compose_options.priority) << "\r\n";
+    output << "Importance: " << ImportanceHeaderValue(message.compose_options.priority) << "\r\n";
+    if (message.compose_options.request_read_receipt) {
+        output << "Disposition-Notification-To: " << message.sender << "\r\n";
+        if (message.use_legacy_return_receipt_header) {
+            output << "Return-Receipt-To: " << message.sender << "\r\n";
+        }
+    }
     output << "MIME-Version: 1.0\r\n";
 
     if (!message.attachments.empty()) {
@@ -2132,6 +2227,10 @@ MailTransportSummary MailTransportCoordinator::SendQueued() {
     }
 
     for (const auto& queued_message : queued_messages) {
+        if (queued_message.delivery_state != MessageDeliveryState::kQueued &&
+            queued_message.delivery_state != MessageDeliveryState::kFailed) {
+            continue;
+        }
         const AccountProfile& account =
             queued_message.account_id.empty() ? accounts.front() : account_by_id[queued_message.account_id];
         const auto password = credential_store_.LoadCredential(account.id, CredentialKind::kOutgoing);
@@ -2149,6 +2248,15 @@ MailTransportSummary MailTransportCoordinator::SendQueued() {
         message_store_.SaveMessage(updated, nullptr);
 
         std::string error_message;
+        if (updated.compose_options.attachment_encoding != AttachmentEncodingMode::kMime) {
+            updated.delivery_state = MessageDeliveryState::kFailed;
+            updated.last_error = "Legacy BinHex/Uuencode attachment encoding is not implemented yet.";
+            updated.updated_at = NowUnixSeconds();
+            message_store_.SaveMessage(updated, nullptr);
+            task.Fail("Failed", updated.last_error);
+            summary.warnings.push_back(updated.last_error);
+            continue;
+        }
         if (!smtp.SendMessage(updated, &error_message)) {
             updated.delivery_state = MessageDeliveryState::kFailed;
             updated.last_error = error_message;
@@ -2161,10 +2269,18 @@ MailTransportSummary MailTransportCoordinator::SendQueued() {
 
         updated.delivery_state = MessageDeliveryState::kSent;
         updated.last_error.clear();
-        updated.mailbox_id = "sent";
         updated.updated_at = NowUnixSeconds();
-        if (message_store_.SaveMessage(updated, &error_message)) {
-            message_store_.DeleteMessage("out", queued_message.id, nullptr);
+        if (updated.compose_options.keep_copies) {
+            updated.mailbox_id = "out";
+            message_store_.SaveMessage(updated, &error_message);
+            MessageRecord sent_copy = updated;
+            sent_copy.mailbox_id = "sent";
+            message_store_.SaveMessage(sent_copy, nullptr);
+        } else {
+            updated.mailbox_id = "sent";
+            if (message_store_.SaveMessage(updated, &error_message)) {
+                message_store_.DeleteMessage("out", queued_message.id, nullptr);
+            }
         }
         ++summary.messages_sent;
         task.Complete("Sent");

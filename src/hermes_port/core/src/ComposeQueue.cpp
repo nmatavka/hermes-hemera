@@ -12,6 +12,56 @@ std::string GenerateQueuedMessageId() {
     return "queued-" + std::to_string(static_cast<long long>(micros));
 }
 
+std::string WrapPlainText(std::string_view text, std::size_t width) {
+    if (width < 20) {
+        return std::string(text);
+    }
+
+    std::string wrapped;
+    std::size_t line_length = 0;
+    std::size_t word_start = 0;
+    auto flush_word = [&](std::size_t end) {
+        const std::string_view word = text.substr(word_start, end - word_start);
+        if (word.empty()) {
+            return;
+        }
+        if (line_length != 0 && line_length + 1 + word.size() > width) {
+            wrapped.push_back('\n');
+            line_length = 0;
+        } else if (line_length != 0) {
+            wrapped.push_back(' ');
+            ++line_length;
+        }
+        wrapped.append(word.data(), word.size());
+        line_length += word.size();
+    };
+
+    for (std::size_t index = 0; index <= text.size(); ++index) {
+        const bool at_end = index == text.size();
+        const char ch = at_end ? '\0' : text[index];
+        if (!at_end && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+            continue;
+        }
+        flush_word(index);
+        word_start = index + 1;
+        if (at_end) {
+            break;
+        }
+        if (ch == '\n') {
+            wrapped.push_back('\n');
+            line_length = 0;
+        } else if (ch == '\r') {
+            if (index + 1 < text.size() && text[index + 1] == '\n') {
+                continue;
+            }
+            wrapped.push_back('\n');
+            line_length = 0;
+        }
+    }
+
+    return wrapped;
+}
+
 MessageRecord BuildQueuedRecord(const ComposeMessage& message, std::string_view mailbox_id) {
     MessageRecord queued;
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(
@@ -34,16 +84,22 @@ MessageRecord BuildQueuedRecord(const ComposeMessage& message, std::string_view 
         }
         queued.recipients += message.headers.bcc;
     }
-    queued.plain_text_body = message.body.plain_text;
+    queued.plain_text_body = message.options.word_wrap
+                                 ? WrapPlainText(message.body.plain_text,
+                                                 static_cast<std::size_t>(message.policy.word_wrap_max))
+                                 : message.body.plain_text;
     queued.html_body = message.body.html_fragment;
     queued.account_id = message.headers.from_persona.empty() ? "primary" : message.headers.from_persona;
     queued.delivery_state = MessageDeliveryState::kQueued;
     queued.created_at = static_cast<std::int64_t>(now);
     queued.updated_at = queued.created_at;
     queued.unread = false;
+    queued.compose_options = message.options;
+    queued.use_legacy_return_receipt_header = message.policy.return_receipt_legacy_header;
     for (const auto& attachment : message.attachments) {
         MessageAttachment queued_attachment;
-        queued_attachment.name = attachment.display_name;
+        queued_attachment.name =
+            attachment.display_name.empty() ? attachment.source_path.filename().string() : attachment.display_name;
         queued_attachment.content_type = attachment.mime_type;
         queued_attachment.size = static_cast<std::size_t>(attachment.size);
         queued_attachment.payload_path = attachment.source_path.string();

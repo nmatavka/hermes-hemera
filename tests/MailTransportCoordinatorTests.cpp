@@ -457,8 +457,12 @@ HERMES_TEST(MailTransportCoordinatorSendsQueuedMailAndMovesItToSent) {
     queued.subject = "Hello transport";
     queued.sender = "sender@example.com";
     queued.recipients = "receiver@example.com";
-    queued.plain_text_body = "Queued body";
+    queued.plain_text_body = "Queued body = receipt";
     queued.delivery_state = hermes::MessageDeliveryState::kQueued;
+    queued.compose_options.priority = hermes::ComposePriority::kHigh;
+    queued.compose_options.request_read_receipt = true;
+    queued.compose_options.quoted_printable = true;
+    queued.use_legacy_return_receipt_header = true;
     HERMES_CHECK(message_store.SaveMessage(queued, &error_message));
 
     hermes::MailTransportCoordinator coordinator(
@@ -467,12 +471,156 @@ HERMES_TEST(MailTransportCoordinatorSendsQueuedMailAndMovesItToSent) {
     HERMES_CHECK(summary.success);
     HERMES_CHECK_EQ(summary.messages_sent, static_cast<std::size_t>(1));
     HERMES_CHECK(captured_message.find("Subject: Hello transport") != std::string::npos);
+    HERMES_CHECK(captured_message.find("X-Priority: 2 (High)") != std::string::npos);
+    HERMES_CHECK(captured_message.find("Importance: high") != std::string::npos);
+    HERMES_CHECK(captured_message.find("Disposition-Notification-To: sender@example.com") !=
+                 std::string::npos);
+    HERMES_CHECK(captured_message.find("Return-Receipt-To: sender@example.com") != std::string::npos);
+    HERMES_CHECK(captured_message.find("Content-Transfer-Encoding: quoted-printable") !=
+                 std::string::npos);
+    HERMES_CHECK(captured_message.find("Queued=20body=20=3D=20receipt") != std::string::npos);
     HERMES_CHECK(!message_store.GetMessage("out", "queued-1"));
     const auto sent = message_store.GetMessage("sent", "queued-1");
     HERMES_CHECK(static_cast<bool>(sent));
     HERMES_CHECK_EQ(sent->delivery_state, hermes::MessageDeliveryState::kSent);
 
     server.join();
+}
+
+HERMES_TEST(MailTransportCoordinatorKeepsCopiesInOutWhenRequested) {
+    std::uint16_t port = 0;
+    const int listener = CreateListener(&port);
+    HERMES_CHECK(listener >= 0);
+
+    std::thread server([&]() {
+        const int client = ::accept(listener, nullptr, nullptr);
+        HERMES_CHECK(client >= 0);
+        WriteAll(client, "220 smtp.example.test ESMTP\r\n");
+        HERMES_CHECK(ReadLine(client).rfind("EHLO hermes-hemera", 0) == 0);
+        WriteAll(client, "250-localhost\r\n250-AUTH LOGIN\r\n250 OK\r\n");
+        HERMES_CHECK(ReadLine(client) == "AUTH LOGIN");
+        WriteAll(client, "334 VXNlcm5hbWU6\r\n");
+        HERMES_CHECK(!ReadLine(client).empty());
+        WriteAll(client, "334 UGFzc3dvcmQ6\r\n");
+        HERMES_CHECK(!ReadLine(client).empty());
+        WriteAll(client, "235 Authentication successful\r\n");
+        HERMES_CHECK(ReadLine(client).rfind("MAIL FROM:<sender@example.com>", 0) == 0);
+        WriteAll(client, "250 Sender ok\r\n");
+        HERMES_CHECK(ReadLine(client).rfind("RCPT TO:<receiver@example.com>", 0) == 0);
+        WriteAll(client, "250 Recipient ok\r\n");
+        HERMES_CHECK(ReadLine(client) == "DATA");
+        WriteAll(client, "354 End with .\r\n");
+        (void)ReadUntilDot(client);
+        WriteAll(client, "250 Queued\r\n");
+        HERMES_CHECK(ReadLine(client) == "QUIT");
+        WriteAll(client, "221 Bye\r\n");
+        ::close(client);
+        ::close(listener);
+    });
+
+    hermes::AccountProfile account;
+    account.id = "primary";
+    account.display_name = "Primary";
+    account.login_name = "sender";
+    account.email_address = "sender@example.com";
+    account.outgoing_server = "127.0.0.1";
+    account.outgoing_port = port;
+    account.smtp_auth = hermes::SmtpAuthMode::kLogin;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::FilesystemSyncStateStore sync_store(hermes::tests::UniqueTempPath("hermes-sync-unused"));
+    hermes::tests::ScopedTempDirectory temp("hermes-smtp-keep-copies");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("primary", hermes::CredentialKind::kOutgoing, "smtp-pass",
+                                            &error_message));
+    HERMES_CHECK(mailbox_store.EnsureMailbox(
+        {"out", "Out", {}, "primary", hermes::MailboxProtocol::kSmtp, "", false, true, 0}, &error_message));
+
+    hermes::MessageRecord queued;
+    queued.id = "queued-keep";
+    queued.mailbox_id = "out";
+    queued.account_id = "primary";
+    queued.subject = "Keep a copy";
+    queued.sender = "sender@example.com";
+    queued.recipients = "receiver@example.com";
+    queued.plain_text_body = "Keep this source in out.";
+    queued.delivery_state = hermes::MessageDeliveryState::kQueued;
+    queued.compose_options.keep_copies = true;
+    HERMES_CHECK(message_store.SaveMessage(queued, &error_message));
+
+    hermes::MailTransportCoordinator coordinator(
+        accounts, credentials, sync_store, mailbox_store, message_store, transport, tls_provider, tasks);
+    const auto summary = coordinator.SendQueued();
+    HERMES_CHECK(summary.success);
+    HERMES_CHECK_EQ(summary.messages_sent, static_cast<std::size_t>(1));
+
+    const auto out = message_store.GetMessage("out", "queued-keep");
+    const auto sent = message_store.GetMessage("sent", "queued-keep");
+    HERMES_CHECK(static_cast<bool>(out));
+    HERMES_CHECK(static_cast<bool>(sent));
+    HERMES_CHECK_EQ(out->delivery_state, hermes::MessageDeliveryState::kSent);
+    HERMES_CHECK_EQ(sent->delivery_state, hermes::MessageDeliveryState::kSent);
+
+    server.join();
+}
+
+HERMES_TEST(MailTransportCoordinatorFailsQueuedMailWhenLegacyAttachmentEncodingIsRequested) {
+    hermes::AccountProfile account;
+    account.id = "primary";
+    account.display_name = "Primary";
+    account.login_name = "sender";
+    account.email_address = "sender@example.com";
+    account.outgoing_server = "127.0.0.1";
+    account.outgoing_port = 2525;
+    account.smtp_auth = hermes::SmtpAuthMode::kPlain;
+
+    FixedAccountService accounts({account});
+    hermes::InMemoryCredentialStore credentials;
+    hermes::FilesystemSyncStateStore sync_store(hermes::tests::UniqueTempPath("hermes-sync-unused"));
+    hermes::tests::ScopedTempDirectory temp("hermes-smtp-legacy-encoding");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::OpenSslTlsProvider tls_provider;
+    hermes::SocketTransportService transport(&tls_provider);
+    hermes::InMemoryMailTaskModel tasks;
+
+    std::string error_message;
+    HERMES_CHECK(credentials.SaveCredential("primary", hermes::CredentialKind::kOutgoing, "smtp-pass",
+                                            &error_message));
+    HERMES_CHECK(mailbox_store.EnsureMailbox(
+        {"out", "Out", {}, "primary", hermes::MailboxProtocol::kSmtp, "", false, true, 0}, &error_message));
+
+    hermes::MessageRecord queued;
+    queued.id = "queued-legacy-encoding";
+    queued.mailbox_id = "out";
+    queued.account_id = "primary";
+    queued.subject = "Legacy encoding";
+    queued.sender = "sender@example.com";
+    queued.recipients = "receiver@example.com";
+    queued.plain_text_body = "This should fail.";
+    queued.delivery_state = hermes::MessageDeliveryState::kQueued;
+    queued.compose_options.attachment_encoding = hermes::AttachmentEncodingMode::kBinHex;
+    HERMES_CHECK(message_store.SaveMessage(queued, &error_message));
+
+    hermes::MailTransportCoordinator coordinator(
+        accounts, credentials, sync_store, mailbox_store, message_store, transport, tls_provider, tasks);
+    const auto summary = coordinator.SendQueued();
+    HERMES_CHECK(summary.success);
+    HERMES_CHECK_EQ(summary.messages_sent, static_cast<std::size_t>(0));
+    HERMES_CHECK_EQ(summary.warnings.size(), static_cast<std::size_t>(1));
+    HERMES_CHECK(summary.warnings.front().find("not implemented") != std::string::npos);
+
+    const auto failed = message_store.GetMessage("out", "queued-legacy-encoding");
+    HERMES_CHECK(static_cast<bool>(failed));
+    HERMES_CHECK_EQ(failed->delivery_state, hermes::MessageDeliveryState::kFailed);
+    HERMES_CHECK(failed->last_error.find("not implemented") != std::string::npos);
 }
 
 HERMES_TEST(MailTransportCoordinatorSendsQueuedMailWithAttachmentsAsMultipartMixed) {

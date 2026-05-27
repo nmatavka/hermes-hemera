@@ -134,6 +134,8 @@ public:
     std::vector<StationeryTemplate> AvailableStationery() const;
     bool ApplySignature(std::string_view name);
     std::vector<SignatureTemplate> AvailableSignatures() const;
+    const ComposeOptions& Options() const;
+    bool UpdateOptions(const ComposeOptions& options);
     const std::vector<ComposeAttachment>& Attachments() const;
     bool AddAttachment(const ComposeAttachment& attachment, std::string* error_message = nullptr);
     bool RemoveAttachment(std::size_t index);

@@ -64,3 +64,42 @@ HERMES_TEST(QueueComposeMessageRequiresConfirmationWhenWarningsArePresent) {
         hermes::QueueComposeMessage(controller, mailbox_store, message_store, "out", true);
     HERMES_CHECK(confirmed.queued);
 }
+
+HERMES_TEST(QueueComposeMessageCarriesComposeOptionsAndWrapsPlainTextWhenEnabled) {
+    hermes::tests::ScopedTempDirectory temp("hermes-queue-options");
+    hermes::FilesystemMailboxStore mailbox_store(temp.Path());
+    hermes::FilesystemMessageStore message_store(temp.Path());
+    hermes::MemoryRichTextSurface surface;
+
+    hermes::ComposeMessage message;
+    message.id = "queue-options";
+    message.headers.to = "dev@example.com";
+    message.headers.subject = "Wrapped queue";
+    message.headers.from_persona = "primary";
+    message.body.plain_text = "alpha beta gamma delta epsilon zeta eta theta";
+    message.policy.word_wrap_max = 24;
+    message.options.priority = hermes::ComposePriority::kHighest;
+    message.options.keep_copies = true;
+    message.options.request_read_receipt = true;
+    message.options.quoted_printable = false;
+    message.options.word_wrap = true;
+    message.options.tabs_in_body = false;
+    message.options.text_as_document = true;
+
+    hermes::ComposeController controller(surface);
+    HERMES_CHECK(controller.Load(message));
+
+    const auto result =
+        hermes::QueueComposeMessage(controller, mailbox_store, message_store, "out", false);
+    HERMES_CHECK(result.queued);
+
+    const auto queued_message = message_store.GetMessage("out", "queue-options");
+    HERMES_CHECK(static_cast<bool>(queued_message));
+    HERMES_CHECK_EQ(queued_message->compose_options.priority, hermes::ComposePriority::kHighest);
+    HERMES_CHECK(queued_message->compose_options.keep_copies);
+    HERMES_CHECK(queued_message->compose_options.request_read_receipt);
+    HERMES_CHECK(!queued_message->compose_options.quoted_printable);
+    HERMES_CHECK(!queued_message->compose_options.tabs_in_body);
+    HERMES_CHECK(queued_message->compose_options.text_as_document);
+    HERMES_CHECK(queued_message->plain_text_body.find('\n') != std::string::npos);
+}

@@ -43,3 +43,27 @@ HERMES_TEST(ComposePolicyFromSettingsMapsMoodAndBossProtectorRuntimeFlags) {
     HERMES_CHECK(policy.warn_on_styled_send);
     HERMES_CHECK(policy.send_styled_only);
 }
+
+HERMES_TEST(ComposePolicyFromSettingsMapsLegacyComposeDefaults) {
+    hermes::IniSettingsStore settings;
+    settings.SetString("Settings", "SendBinHex", "1");
+    settings.SetString("Settings", "UseQP", "0");
+    settings.SetString("Settings", "WordWrap", "0");
+    settings.SetString("Settings", "TabsInBody", "0");
+    settings.SetString("Settings", "KeepCopies", "1");
+    settings.SetString("Settings", "ReturnReceiptFlag", "1");
+    settings.SetString("Settings", "WordWrapOnScreen", "1");
+    settings.SetString("Settings", "WordWrapColumn", "72");
+    settings.SetString("Settings", "WordWrapMax", "88");
+
+    const hermes::ComposePolicy policy = hermes::ComposePolicyFromSettings(settings);
+    HERMES_CHECK_EQ(policy.default_options.attachment_encoding, hermes::AttachmentEncodingMode::kBinHex);
+    HERMES_CHECK(!policy.default_options.quoted_printable);
+    HERMES_CHECK(!policy.default_options.word_wrap);
+    HERMES_CHECK(!policy.default_options.tabs_in_body);
+    HERMES_CHECK(policy.default_options.keep_copies);
+    HERMES_CHECK(policy.return_receipt_legacy_header);
+    HERMES_CHECK(policy.word_wrap_on_screen);
+    HERMES_CHECK_EQ(policy.word_wrap_column, 72);
+    HERMES_CHECK_EQ(policy.word_wrap_max, 88);
+}

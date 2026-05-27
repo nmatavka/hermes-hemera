@@ -2,6 +2,7 @@
 
 #include <Application.h>
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <system_error>
@@ -23,6 +24,82 @@ std::filesystem::path SourceRoot() {
 
 std::string PreviewText(std::string_view body, std::size_t limit = 80) {
     return std::string(body.substr(0, std::min<std::size_t>(body.size(), limit)));
+}
+
+std::string SanitizeId(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (char ch : value) {
+        if (std::isalnum(static_cast<unsigned char>(ch))) {
+            result.push_back(ch);
+        } else {
+            result.push_back('-');
+        }
+    }
+    return result;
+}
+
+std::string MailboxProtocolLabel(MailboxProtocol protocol) {
+    switch (protocol) {
+        case MailboxProtocol::kLocal:
+            return "local";
+        case MailboxProtocol::kPop:
+            return "pop";
+        case MailboxProtocol::kImap:
+            return "imap";
+        case MailboxProtocol::kSmtp:
+            return "smtp";
+    }
+    return "local";
+}
+
+std::string DeliveryStateLabel(MessageDeliveryState state) {
+    switch (state) {
+        case MessageDeliveryState::kDraft:
+            return "draft";
+        case MessageDeliveryState::kQueued:
+            return "queued";
+        case MessageDeliveryState::kSending:
+            return "sending";
+        case MessageDeliveryState::kSent:
+            return "sent";
+        case MessageDeliveryState::kReceived:
+            return "received";
+        case MessageDeliveryState::kFailed:
+            return "failed";
+    }
+    return "received";
+}
+
+std::string PriorityLabel(ComposePriority priority) {
+    switch (priority) {
+        case ComposePriority::kHighest:
+            return "highest";
+        case ComposePriority::kHigh:
+            return "high";
+        case ComposePriority::kNormal:
+            return "normal";
+        case ComposePriority::kLow:
+            return "low";
+        case ComposePriority::kLowest:
+            return "lowest";
+    }
+    return "normal";
+}
+
+std::string MailboxParentId(const MailboxRecord& mailbox) {
+    if (mailbox.account_id.empty()) {
+        return {};
+    }
+
+    if (mailbox.protocol == MailboxProtocol::kImap && !mailbox.remote_name.empty()) {
+        const std::size_t split = mailbox.remote_name.find_last_of("/.");
+        if (split != std::string::npos && split > 0) {
+            return mailbox.account_id + ":" + SanitizeId(mailbox.remote_name.substr(0, split));
+        }
+    }
+
+    return "account:" + mailbox.account_id;
 }
 
 AttachmentSummary BuildAttachmentSummary(const MessageAttachment& attachment) {
@@ -385,8 +462,23 @@ void HaikuShellHost::ReloadWorkspace() {
     workspace_ = std::make_unique<InMemoryWorkspaceModel>();
 
     for (const auto& mailbox : mailbox_store_->ListMailboxes()) {
-        workspace_->AddMailbox({mailbox.id, mailbox.display_name, mailbox.message_count});
-        for (const auto& message : message_store_->ListMessages(mailbox.id)) {
+        const auto messages = message_store_->ListMessages(mailbox.id);
+        std::size_t unread_count = 0;
+        for (const auto& message : messages) {
+            if (message.unread) {
+                ++unread_count;
+            }
+        }
+
+        workspace_->AddMailbox({mailbox.id,
+                                mailbox.display_name,
+                                unread_count,
+                                MailboxParentId(mailbox),
+                                mailbox.account_id,
+                                MailboxProtocolLabel(mailbox.protocol),
+                                mailbox.system_mailbox,
+                                mailbox.is_remote});
+        for (const auto& message : messages) {
             const std::string preview = PreviewText(message.plain_text_body);
             workspace_->AddMessage({
                 message.id,
@@ -396,6 +488,12 @@ void HaikuShellHost::ReloadWorkspace() {
                 preview,
                 message.unread,
                 message.attachments.size(),
+                DeliveryStateLabel(message.delivery_state),
+                PriorityLabel(message.compose_options.priority),
+                message.attachments_omitted,
+                message.download_complete,
+                message.plain_text_body.size() + message.html_body.size(),
+                message.updated_at != 0 ? message.updated_at : message.created_at,
             });
             MessageDetail detail;
             detail.id = message.id;
@@ -435,6 +533,12 @@ void HaikuShellHost::ReloadWorkspace() {
             preview,
             false,
             draft.attachments.size(),
+            "draft",
+            PriorityLabel(draft.options.priority),
+            false,
+            true,
+            draft.body.plain_text.size() + draft.body.html_fragment.size(),
+            0,
         });
         MessageDetail detail;
         detail.id = draft.id;
@@ -478,9 +582,18 @@ void HaikuShellHost::EnsureWorkspaceDirectories() {
 }
 
 void HaikuShellHost::LoadBootstrapAccounts() {
-    const auto profile = SourceRoot() / "tests" / "fixtures" / "legacy" / "profile_snapshots" / "Eudora.box";
+    const auto bootstrap_profile =
+        SourceRoot() / "tests" / "fixtures" / "legacy" / "profile_snapshots" / "Eudora.box";
+    const auto active_profile = std::filesystem::exists(SettingsPath()) ? SettingsPath() : bootstrap_profile;
+
     std::string ignored;
-    account_service_->LoadFromIniFile(profile, &ignored);
+    if (!settings_->LoadFromFile(active_profile, &ignored)) {
+        settings_->LoadFromFile(bootstrap_profile, &ignored);
+    }
+    if (!account_service_->LoadFromSettings(*settings_) && active_profile != bootstrap_profile) {
+        settings_->LoadFromFile(bootstrap_profile, &ignored);
+        account_service_->LoadFromSettings(*settings_);
+    }
 }
 
 std::filesystem::path HaikuShellHost::DataRoot() const {
@@ -488,6 +601,16 @@ std::filesystem::path HaikuShellHost::DataRoot() const {
         return std::filesystem::path(home) / "config" / "settings" / "HermesHemera";
     }
     return std::filesystem::current_path() / "var" / "haiku-shell";
+}
+
+std::filesystem::path HaikuShellHost::SettingsPath() const {
+    return DataRoot() / "EUDORA.ini";
+}
+
+bool HaikuShellHost::PersistSettings(std::string* error_message) {
+    std::error_code ignored;
+    std::filesystem::create_directories(DataRoot(), ignored);
+    return settings_->SaveToFile(SettingsPath(), error_message);
 }
 
 }  // namespace hermes::haiku_port

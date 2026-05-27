@@ -264,6 +264,17 @@ bool HasStyles(const RichTextDocument& document) {
     return !document.html_fragment.empty() && !IsWhitespaceOnly(document.html_fragment);
 }
 
+bool IsDefaultOptions(const ComposeOptions& options) {
+    return options.priority == ComposePriority::kNormal &&
+           options.attachment_encoding == AttachmentEncodingMode::kMime &&
+           options.keep_copies == false &&
+           options.request_read_receipt == false &&
+           options.quoted_printable == true &&
+           options.word_wrap == true &&
+           options.tabs_in_body == true &&
+           options.text_as_document == false;
+}
+
 std::string EscapeHtml(std::string_view text) {
     std::string escaped;
     escaped.reserve(text.size() + 32);
@@ -345,6 +356,9 @@ ComposeController::ComposeController(RichTextSurface& surface,
 bool ComposeController::Load(const ComposeMessage& message) {
     message_ = message;
     message_.body.read_only = message_.policy.read_only;
+    if (IsDefaultOptions(message_.options)) {
+        message_.options = message_.policy.default_options;
+    }
     dirty_ = false;
     spell_dirty_ = true;
     mood_dirty_ = true;
@@ -507,6 +521,18 @@ bool ComposeController::ApplySignature(std::string_view name) {
 
 std::vector<SignatureTemplate> ComposeController::AvailableSignatures() const {
     return signature_store_ ? signature_store_->Templates() : std::vector<SignatureTemplate>{};
+}
+
+const ComposeOptions& ComposeController::Options() const {
+    return message_.options;
+}
+
+bool ComposeController::UpdateOptions(const ComposeOptions& options) {
+    message_.options = options;
+    dirty_ = true;
+    last_send_validation_.reset();
+    RefreshBanner();
+    return true;
 }
 
 const std::vector<ComposeAttachment>& ComposeController::Attachments() const {
