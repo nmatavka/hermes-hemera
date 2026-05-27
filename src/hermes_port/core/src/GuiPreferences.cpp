@@ -106,6 +106,8 @@ GuiPreferences GuiPreferencesFromSettings(const SettingsStore& settings, std::st
         settings.GetString(section, "HaikuTaskStatusWindowFrame").value_or("");
     preferences.detached_task_error_window_frame =
         settings.GetString(section, "HaikuTaskErrorWindowFrame").value_or("");
+    preferences.detached_tool_window_layout =
+        settings.GetString(section, "HaikuDetachedToolWindowLayout").value_or("");
     return preferences;
 }
 
@@ -160,6 +162,9 @@ void ApplyGuiPreferencesToSettings(const GuiPreferences& preferences,
     settings.SetString(section,
                        "HaikuTaskErrorWindowFrame",
                        preferences.detached_task_error_window_frame);
+    settings.SetString(section,
+                       "HaikuDetachedToolWindowLayout",
+                       preferences.detached_tool_window_layout);
 }
 
 }  // namespace hermes

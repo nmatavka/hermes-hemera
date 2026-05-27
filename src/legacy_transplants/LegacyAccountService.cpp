@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 
 #include "hermes/IniSettingsStore.h"
 
@@ -186,6 +187,172 @@ AccountProfile ProfileFromSection(const SettingsStore& settings, std::string_vie
     return profile;
 }
 
+std::string SecurityModeToString(TransportSecurityMode mode) {
+    switch (mode) {
+        case TransportSecurityMode::kPlaintext:
+            return "plain";
+        case TransportSecurityMode::kImplicitTls:
+            return "ssl";
+        case TransportSecurityMode::kStartTls:
+            return "starttls";
+    }
+    return "plain";
+}
+
+void WriteBool(SettingsStore& settings, std::string_view section, std::string_view key, bool value) {
+    settings.SetString(section, key, value ? "1" : "0");
+}
+
+void WriteInt(SettingsStore& settings, std::string_view section, std::string_view key, std::uint16_t value) {
+    settings.SetString(section, key, std::to_string(value));
+}
+
+void WriteSize(SettingsStore& settings, std::string_view section, std::string_view key, std::size_t value) {
+    settings.SetString(section, key, std::to_string(static_cast<unsigned long long>(value)));
+}
+
+std::string StorageSectionName(const AccountProfile& account, std::size_t index) {
+    if (index == 0) {
+        return "Settings";
+    }
+    if (account.id.empty() || account.id == "Settings") {
+        return "Persona-" + std::to_string(index);
+    }
+    return account.id;
+}
+
+void ClearAccountSection(SettingsStore& settings, std::string_view section) {
+    static constexpr const char* kAccountKeys[] = {
+        "RealName",
+        "ReturnAddress",
+        "POPAccount",
+        "LoginName",
+        "UsesPOP",
+        "UsesIMAP",
+        "PopServer",
+        "ImapServer",
+        "SMTPServer",
+        "POPPort",
+        "IMAPPort",
+        "SMTPPort",
+        "POPSecurity",
+        "IMAPSecurity",
+        "SMTPSecurity",
+        "POPSSLUse",
+        "IMAPSSLUse",
+        "SMTPSSLUse",
+        "POPStartTls",
+        "IMAPStartTls",
+        "SMTPStartTls",
+        "AuthenticateKerberos",
+        "AuthenticateAPOP",
+        "AuthenticateRPA",
+        "AuthenticateCRAMMD5",
+        "SmtpAuthAllowed",
+        "SmtpAuthMethod",
+        "LeaveMailOnServer",
+        "DeleteMailFromServer",
+        "SkipBigMessages",
+        "CheckMailByDefault",
+        "BigMessageThreshold",
+        "IMAPMaxDownloadSize",
+        "IMAPOmitAttachments",
+        "MarkAsDeleted",
+        "TransferToTrashOnDelete",
+        "IMAPMinDownload",
+        "ImapDirectoryPrefix",
+        "TrashMailboxName",
+        "KerberosServiceName",
+        "KerberosRealm",
+        "KerberosServiceFormat",
+        "KerberosPOPPort",
+    };
+
+    for (const char* key : kAccountKeys) {
+        settings.RemoveValue(section, key);
+    }
+}
+
+void WriteAccount(SettingsStore& settings, std::string_view section, const AccountProfile& profile) {
+    settings.SetString(section, "RealName", profile.display_name);
+    settings.SetString(section,
+                       "ReturnAddress",
+                       profile.email_address.empty() ? profile.id : profile.email_address);
+    settings.SetString(section,
+                       "POPAccount",
+                       profile.email_address.empty() ? profile.id : profile.email_address);
+    settings.SetString(section, "LoginName", profile.login_name);
+    WriteBool(settings, section, "UsesPOP", profile.uses_pop);
+    WriteBool(settings, section, "UsesIMAP", profile.uses_imap);
+    settings.SetString(section, "PopServer", profile.incoming_server);
+    settings.SetString(section, "ImapServer", profile.incoming_server);
+    settings.SetString(section, "SMTPServer", profile.outgoing_server);
+    WriteInt(settings, section, "POPPort", profile.incoming_port == 0 ? 110 : profile.incoming_port);
+    WriteInt(settings, section, "IMAPPort", profile.incoming_port == 0 ? 143 : profile.incoming_port);
+    WriteInt(settings, section, "SMTPPort", profile.outgoing_port == 0 ? 25 : profile.outgoing_port);
+    settings.SetString(section,
+                       profile.uses_imap ? "IMAPSecurity" : "POPSecurity",
+                       SecurityModeToString(profile.incoming_security));
+    settings.SetString(section, "SMTPSecurity", SecurityModeToString(profile.outgoing_security));
+    WriteBool(settings,
+              section,
+              profile.uses_imap ? "IMAPSSLUse" : "POPSSLUse",
+              profile.incoming_security != TransportSecurityMode::kPlaintext);
+    WriteBool(settings,
+              section,
+              profile.uses_imap ? "IMAPStartTls" : "POPStartTls",
+              profile.incoming_security == TransportSecurityMode::kStartTls);
+    WriteBool(settings,
+              section,
+              "SMTPSSLUse",
+              profile.outgoing_security != TransportSecurityMode::kPlaintext);
+    WriteBool(settings,
+              section,
+              "SMTPStartTls",
+              profile.outgoing_security == TransportSecurityMode::kStartTls);
+    WriteBool(settings, section, "AuthenticateAPOP", profile.pop_auth == PopAuthMode::kAPOP);
+    WriteBool(settings, section, "AuthenticateRPA", profile.pop_auth == PopAuthMode::kRPA);
+    WriteBool(settings,
+              section,
+              "AuthenticateKerberos",
+              profile.pop_auth == PopAuthMode::kKerberos || profile.imap_auth == ImapAuthMode::kKerberos);
+    WriteBool(settings, section, "AuthenticateCRAMMD5", profile.imap_auth == ImapAuthMode::kCramMd5);
+    WriteBool(settings, section, "SmtpAuthAllowed", profile.smtp_auth_allowed);
+    switch (profile.smtp_auth) {
+        case SmtpAuthMode::kNone:
+            settings.SetString(section, "SmtpAuthMethod", "none");
+            break;
+        case SmtpAuthMode::kCramMd5:
+            settings.SetString(section, "SmtpAuthMethod", "cram-md5");
+            break;
+        case SmtpAuthMode::kLogin:
+            settings.SetString(section, "SmtpAuthMethod", "login");
+            break;
+        case SmtpAuthMode::kPlain:
+            settings.SetString(section, "SmtpAuthMethod", "plain");
+            break;
+    }
+    WriteBool(settings, section, "LeaveMailOnServer", profile.leave_mail_on_server);
+    WriteBool(settings, section, "DeleteMailFromServer", profile.delete_mail_from_server);
+    WriteBool(settings, section, "SkipBigMessages", profile.skip_big_messages);
+    WriteBool(settings, section, "CheckMailByDefault", profile.check_mail_by_default);
+    WriteSize(settings, section, "BigMessageThreshold", profile.big_message_threshold);
+    WriteSize(settings, section, "IMAPMaxDownloadSize", profile.imap_max_download_size);
+    WriteBool(settings, section, "IMAPOmitAttachments", profile.imap_omit_attachments);
+    WriteBool(settings, section, "MarkAsDeleted", profile.mark_as_deleted);
+    WriteBool(settings, section, "TransferToTrashOnDelete", profile.transfer_to_trash_on_delete);
+    WriteBool(settings,
+              section,
+              "IMAPMinDownload",
+              profile.imap_download_mode == ImapDownloadMode::kMinimalHeaders);
+    settings.SetString(section, "ImapDirectoryPrefix", profile.imap_directory_prefix);
+    settings.SetString(section, "TrashMailboxName", profile.trash_mailbox_name);
+    settings.SetString(section, "KerberosServiceName", profile.kerberos.service_name);
+    settings.SetString(section, "KerberosRealm", profile.kerberos.realm);
+    settings.SetString(section, "KerberosServiceFormat", profile.kerberos.service_format);
+    WriteInt(settings, section, "KerberosPOPPort", profile.kerberos.pop_port);
+}
+
 }  // namespace
 
 bool LegacyAccountService::LoadFromSettings(const SettingsStore& settings) {
@@ -226,6 +393,57 @@ std::optional<AccountProfile> LegacyAccountService::FindById(std::string_view id
         return std::nullopt;
     }
     return *it;
+}
+
+void LegacyAccountService::SetAccounts(std::vector<AccountProfile> accounts) {
+    accounts_ = std::move(accounts);
+}
+
+void LegacyAccountService::AddOrReplace(const AccountProfile& account) {
+    const auto it = std::find_if(accounts_.begin(), accounts_.end(), [&](const AccountProfile& existing) {
+        return existing.id == account.id;
+    });
+    if (it != accounts_.end()) {
+        *it = account;
+        return;
+    }
+    accounts_.push_back(account);
+}
+
+bool LegacyAccountService::Remove(std::string_view id) {
+    const auto it = std::remove_if(accounts_.begin(), accounts_.end(), [&](const AccountProfile& account) {
+        return account.id == id;
+    });
+    if (it == accounts_.end()) {
+        return false;
+    }
+    accounts_.erase(it, accounts_.end());
+    return true;
+}
+
+bool LegacyAccountService::SaveToSettings(SettingsStore& settings, std::string* error_message) const {
+    for (const auto& section : settings.Sections()) {
+        if (LooksLikeAccountSection(settings, section)) {
+            ClearAccountSection(settings, section);
+        }
+    }
+
+    for (std::size_t index = 0; index < accounts_.size(); ++index) {
+        WriteAccount(settings, StorageSectionName(accounts_[index], index), accounts_[index]);
+    }
+
+    if (error_message) {
+        error_message->clear();
+    }
+    return true;
+}
+
+bool LegacyAccountService::SaveToIniFile(const std::filesystem::path& path, std::string* error_message) const {
+    IniSettingsStore settings;
+    for (std::size_t index = 0; index < accounts_.size(); ++index) {
+        WriteAccount(settings, StorageSectionName(accounts_[index], index), accounts_[index]);
+    }
+    return settings.SaveToFile(path, error_message);
 }
 
 }  // namespace hermes

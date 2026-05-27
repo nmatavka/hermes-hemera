@@ -51,6 +51,7 @@ HERMES_TEST(FilesystemMessageStoreRoundTripsPlainAndHtmlBodies) {
     message.remote_mailbox = "INBOX";
     message.attachments_omitted = true;
     message.flagged = true;
+    message.filters_applied = true;
     message.attachments.push_back({"report.pdf", "application/pdf", 128, false});
     message.unread = false;
 
@@ -70,6 +71,7 @@ HERMES_TEST(FilesystemMessageStoreRoundTripsPlainAndHtmlBodies) {
     HERMES_CHECK_EQ(loaded->delivery_state, hermes::MessageDeliveryState::kQueued);
     HERMES_CHECK(loaded->attachments_omitted);
     HERMES_CHECK(loaded->flagged);
+    HERMES_CHECK(loaded->filters_applied);
     HERMES_CHECK_EQ(loaded->attachments.size(), static_cast<std::size_t>(1));
     HERMES_CHECK_EQ(loaded->attachments.front().name, std::string("report.pdf"));
     HERMES_CHECK(!loaded->unread);

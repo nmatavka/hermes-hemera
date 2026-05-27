@@ -89,6 +89,7 @@ constexpr uint32_t kToggleToolbarMessage = 'tgtb';
 constexpr uint32_t kToggleUtilityPaneMessage = 'tgup';
 constexpr uint32_t kSelectTaskStatusTabMessage = 'stst';
 constexpr uint32_t kSelectTaskErrorsTabMessage = 'ster';
+constexpr uint32_t kOpenToolWindowMessage = 'otwl';
 constexpr uint32_t kPreviewReadTickMessage = 'prrd';
 
 constexpr float kToolbarButtonSpacing = 6.0f;
@@ -622,6 +623,28 @@ HaikuMainWindow::HaikuMainWindow(HaikuShellHost& shell_host)
     view_menu->AddItem(new BMenuItem("Task Errors", new BMessage(kSelectTaskErrorsTabMessage)));
     menu_bar->AddItem(view_menu);
 
+    auto* tools_menu = new BMenu("Tools");
+    const std::vector<std::pair<const char*, const char*>> tool_entries = {
+        {"Mailboxes", "mailboxes"},
+        {"Task Status", "task-status"},
+        {"Task Errors", "task-errors"},
+        {"Signatures", "signatures"},
+        {"Stationery", "stationery"},
+        {"Nicknames", "nicknames"},
+        {"Personalities", "personalities"},
+        {"Filters", "filters"},
+        {"Filter Report", "filter-report"},
+        {"Directory Services", "directory-services"},
+        {"File Browser", "file-browser"},
+        {"Link History", "link-history"},
+    };
+    for (const auto& tool_entry : tool_entries) {
+        auto* item_message = new BMessage(kOpenToolWindowMessage);
+        item_message->AddString("tool_id", tool_entry.second);
+        tools_menu->AddItem(new BMenuItem(tool_entry.first, item_message));
+    }
+    menu_bar->AddItem(tools_menu);
+
     auto* mailbox_menu = new BMenu("Mailbox");
     mailbox_menu->AddItem(new BMenuItem("Refresh", new BMessage(kRefreshMailboxMessage)));
     mailbox_menu->AddItem(new BMenuItem("Resync", new BMessage(kResyncMailboxMessage)));
@@ -788,6 +811,9 @@ HaikuMainWindow::HaikuMainWindow(HaikuShellHost& shell_host)
     AddShortcut(B_F7_KEY, B_NO_COMMAND_KEY, new BMessage(kTogglePreviewPaneMessage));
     PopulateWorkspace();
     PopulateTaskStatus();
+    if (mailbox_list_ != nullptr && mailbox_list_->Parent() != nullptr) {
+        mailbox_list_->Parent()->Hide();
+    }
     ApplyGuiPreferences();
 }
 
@@ -1030,6 +1056,14 @@ void HaikuMainWindow::MessageReceived(BMessage* message) {
         case kSelectTaskErrorsTabMessage:
             SelectUtilityTab(1);
             return;
+
+        case kOpenToolWindowMessage: {
+            const char* tool_id = nullptr;
+            if (message->FindString("tool_id", &tool_id) == B_OK && tool_id != nullptr) {
+                shell_host_.OpenToolWindow(tool_id);
+            }
+            return;
+        }
 
         case kPreviewReadTickMessage:
             MarkSelectedMessageReadFromPreview();
@@ -1562,6 +1596,9 @@ void HaikuMainWindow::HandleOpenSelectedAttachment() {
     const std::size_t attachment_index = attachment_indices_[static_cast<std::size_t>(selection)];
     const auto path = shell_host_.AttachmentPath(detail->mailbox_id, detail->id, attachment_index);
     if (path && std::filesystem::exists(*path) && LaunchPath(*path)) {
+        shell_host_.RecordAttachmentLaunch(detail->attachments[attachment_index].name,
+                                           *path,
+                                           detail->mailbox_id + ":" + detail->id);
         SetStatusMessage("Opened selected attachment.");
         return;
     }

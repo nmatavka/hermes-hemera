@@ -21,3 +21,26 @@ HERMES_TEST(FilesystemSignatureStoreDiscoversPlainAndHtmlSignatures) {
     HERMES_CHECK(!alternate->body.html_fragment.empty());
     HERMES_CHECK(alternate->body.plain_text.find("Status Desk") != std::string::npos);
 }
+
+HERMES_TEST(FilesystemSignatureStoreSupportsCrudOperations) {
+    hermes::tests::ScopedTempDirectory temp("hermes-signatures");
+
+    hermes::FilesystemSignatureStore store;
+    std::string error_message;
+    HERMES_CHECK(store.Discover(temp.Path(), &error_message));
+
+    hermes::SignatureTemplate created;
+    created.name = "Ops";
+    created.body.plain_text = "Regards,\nOps";
+    HERMES_CHECK(store.SaveTemplate(created, &error_message));
+    HERMES_CHECK(static_cast<bool>(store.Find("ops")));
+
+    created.body.html_fragment = "<p>Regards,<br>Ops</p>";
+    HERMES_CHECK(store.SaveTemplate(created, &error_message));
+    const auto updated = store.Find("Ops");
+    HERMES_CHECK(static_cast<bool>(updated));
+    HERMES_CHECK(!updated->body.html_fragment.empty());
+
+    HERMES_CHECK(store.DeleteTemplate("Ops", &error_message));
+    HERMES_CHECK(!store.Find("Ops"));
+}

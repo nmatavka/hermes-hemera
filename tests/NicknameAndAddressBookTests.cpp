@@ -37,3 +37,13 @@ HERMES_TEST(FlatFileNicknameStoreRoundTripsEntries) {
     HERMES_CHECK_EQ(entry->addresses.size(), static_cast<std::size_t>(2));
     HERMES_CHECK(entry->recipient_list);
 }
+
+HERMES_TEST(FlatFileNicknameStoreSupportsRemoval) {
+    hermes::FlatFileNicknameStore store;
+    store.AddOrReplace({"dev-team", "Development Team", {"alice@example.com"}, "", false, false});
+    store.AddOrReplace({"qa-team", "QA Team", {"qa@example.com"}, "", false, false});
+
+    HERMES_CHECK(store.Remove("DEV-TEAM"));
+    HERMES_CHECK(!store.FindNickname("dev-team"));
+    HERMES_CHECK_EQ(store.Entries().size(), static_cast<std::size_t>(1));
+}

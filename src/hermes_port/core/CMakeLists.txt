@@ -6,14 +6,18 @@ add_library(
     src/ComposeQueue.cpp
     src/FilesystemMailboxStore.cpp
     src/FilesystemDraftStore.cpp
+    src/FilesystemFilterStore.cpp
     src/GssapiAuthenticator.cpp
     src/ImapActionStore.cpp
     src/BufferedMessageRenderer.cpp
+    src/FilterReportStore.cpp
     src/FilesystemMessageStore.cpp
     src/FilesystemPluginHost.cpp
     src/FilesystemSignatureStore.cpp
     src/FilesystemStationeryStore.cpp
+    src/LinkHistoryStore.cpp
     src/FlatFileNicknameStore.cpp
+    src/DirectoryServiceCatalog.cpp
     src/GuiPreferences.cpp
     src/HeuristicJunkScorer.cpp
     src/HunspellSpellService.cpp

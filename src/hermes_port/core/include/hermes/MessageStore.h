@@ -49,6 +49,7 @@ struct MessageRecord {
     bool flagged = false;
     bool deleted = false;
     bool answered = false;
+    bool filters_applied = false;
     std::string last_error;
     std::int64_t created_at = 0;
     std::int64_t updated_at = 0;

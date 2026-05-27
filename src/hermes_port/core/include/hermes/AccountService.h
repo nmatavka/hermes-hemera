@@ -88,6 +88,12 @@ public:
 
     virtual std::vector<AccountProfile> Accounts() const = 0;
     virtual std::optional<AccountProfile> FindById(std::string_view id) const = 0;
+    virtual void SetAccounts(std::vector<AccountProfile> accounts) = 0;
+    virtual void AddOrReplace(const AccountProfile& account) = 0;
+    virtual bool Remove(std::string_view id) = 0;
+    virtual bool SaveToSettings(SettingsStore& settings, std::string* error_message = nullptr) const = 0;
+    virtual bool SaveToIniFile(const std::filesystem::path& path,
+                               std::string* error_message = nullptr) const = 0;
 };
 
 class LegacyAccountService final : public AccountService {
@@ -97,6 +103,11 @@ public:
 
     std::vector<AccountProfile> Accounts() const override;
     std::optional<AccountProfile> FindById(std::string_view id) const override;
+    void SetAccounts(std::vector<AccountProfile> accounts) override;
+    void AddOrReplace(const AccountProfile& account) override;
+    bool Remove(std::string_view id) override;
+    bool SaveToSettings(SettingsStore& settings, std::string* error_message = nullptr) const override;
+    bool SaveToIniFile(const std::filesystem::path& path, std::string* error_message = nullptr) const override;
 
 private:
     std::vector<AccountProfile> accounts_;

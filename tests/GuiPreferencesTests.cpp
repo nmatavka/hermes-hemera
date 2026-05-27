@@ -73,6 +73,7 @@ HERMES_TEST(GuiPreferencesRoundTripToSettingsStore) {
     preferences.detached_task_error_window_open = true;
     preferences.detached_task_status_window_frame = "100,100,540,320";
     preferences.detached_task_error_window_frame = "110,140,620,420";
+    preferences.detached_tool_window_layout = "mailboxes=40,40,320,720;signatures=120,120,480,500";
 
     hermes::ApplyGuiPreferencesToSettings(preferences, settings);
     const hermes::GuiPreferences reloaded = hermes::GuiPreferencesFromSettings(settings);
@@ -102,4 +103,6 @@ HERMES_TEST(GuiPreferencesRoundTripToSettingsStore) {
     HERMES_CHECK(reloaded.detached_task_error_window_open);
     HERMES_CHECK_EQ(reloaded.detached_task_status_window_frame, std::string("100,100,540,320"));
     HERMES_CHECK_EQ(reloaded.detached_task_error_window_frame, std::string("110,140,620,420"));
+    HERMES_CHECK_EQ(reloaded.detached_tool_window_layout,
+                    std::string("mailboxes=40,40,320,720;signatures=120,120,480,500"));
 }

@@ -4,6 +4,7 @@ add_executable(
     Main.cpp
     HaikuMainWindow.cpp
     HaikuShellHost.cpp
+    HaikuToolWindow.cpp
     PaigeEditorView.cpp
 )
 

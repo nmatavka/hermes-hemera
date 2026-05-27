@@ -9,12 +9,18 @@
 #include "hermes/AccountService.h"
 #include "hermes/CredentialStore.h"
 #include "hermes/DraftStore.h"
+#include "hermes/DirectoryServiceCatalog.h"
 #include "hermes/ImapActionStore.h"
 #include "hermes/IniSettingsStore.h"
+#include "hermes/FilterReportStore.h"
+#include "hermes/FilterStore.h"
+#include "hermes/LinkHistoryStore.h"
 #include "hermes/MailTaskModel.h"
 #include "hermes/MailTransportCoordinator.h"
 #include "hermes/MailboxStore.h"
 #include "hermes/MessageStore.h"
+#include "hermes/AddressBookService.h"
+#include "hermes/NicknameStore.h"
 #include "hermes/OpenSslTlsProvider.h"
 #include "hermes/PaigeRuntime.h"
 #include "hermes/SyncStateStore.h"
@@ -28,6 +34,7 @@ namespace hermes::haiku_port {
 
 class HaikuMainWindow;
 class HaikuComposeWindow;
+class HaikuToolWindow;
 
 class HaikuShellHost final : public ShellHost {
 public:
@@ -80,22 +87,37 @@ public:
     FilesystemDraftStore& Drafts();
     FilesystemMailboxStore& Mailboxes();
     FilesystemMessageStore& Messages();
+    FlatFileNicknameStore& Nicknames();
     FilesystemStationeryStore& Stationery();
     FilesystemSignatureStore& Signatures();
+    MemoryAddressBookService& AddressBook();
+    FilesystemFilterStore& Filters();
+    FilesystemFilterReportStore& FilterReport();
+    FilesystemLinkHistoryStore& LinkHistory();
+    LocalDirectoryServiceCatalog& DirectoryServices();
     PaigeRuntime& Runtime();
     MailTransportCoordinator& TransportCoordinator();
     const std::optional<ComposeMessage>& PendingComposerMessage() const;
     std::optional<MessageDetail> WorkspaceMessageDetail(std::string_view message_id) const;
     std::vector<ImapActionRecord> QueuedImapActions() const;
+    std::filesystem::path DataRootPath() const;
+    std::filesystem::path SettingsFilePath() const;
 
     void ShowMainWindow();
     void ReloadWorkspace();
     bool PersistSettings(std::string* error_message = nullptr);
+    void RecordAttachmentLaunch(std::string_view title,
+                                const std::filesystem::path& path,
+                                std::string_view source_context);
+    bool OpenToolWindow(std::string_view tool_id);
 
 private:
     void LoadBootstrapAccounts();
+    void LoadToolData();
     void ShowComposeWindow(const ComposeMessage& message);
     void EnsureWorkspaceDirectories();
+    void BootstrapTemplatesIfNeeded();
+    void ApplyPendingFilters();
     std::filesystem::path DataRoot() const;
     std::filesystem::path SettingsPath() const;
 
@@ -109,13 +131,20 @@ private:
     std::unique_ptr<FilesystemDraftStore> draft_store_;
     std::unique_ptr<FilesystemMailboxStore> mailbox_store_;
     std::unique_ptr<FilesystemMessageStore> message_store_;
+    std::unique_ptr<FlatFileNicknameStore> nickname_store_;
     std::unique_ptr<FilesystemStationeryStore> stationery_store_;
     std::unique_ptr<FilesystemSignatureStore> signature_store_;
+    std::unique_ptr<MemoryAddressBookService> address_book_service_;
+    std::unique_ptr<FilesystemFilterStore> filter_store_;
+    std::unique_ptr<FilesystemFilterReportStore> filter_report_store_;
+    std::unique_ptr<FilesystemLinkHistoryStore> link_history_store_;
+    std::unique_ptr<LocalDirectoryServiceCatalog> directory_services_;
     std::unique_ptr<OpenSslTlsProvider> tls_provider_;
     std::unique_ptr<SocketTransportService> transport_service_;
     std::unique_ptr<MailTransportCoordinator> transport_coordinator_;
     std::unique_ptr<PaigeRuntime> paige_runtime_;
     std::unique_ptr<HaikuMainWindow> main_window_;
+    std::vector<std::unique_ptr<HaikuToolWindow>> tool_windows_;
     std::vector<std::unique_ptr<HaikuComposeWindow>> compose_windows_;
     std::optional<ComposeMessage> pending_composer_message_;
     std::string active_mailbox_id_;

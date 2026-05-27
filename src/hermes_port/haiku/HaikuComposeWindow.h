@@ -21,7 +21,6 @@ class BView;
 
 namespace hermes {
 class ComposeController;
-class FlatFileNicknameStore;
 class HunspellSpellService;
 class PaigeRichTextSurface;
 class TaeMoodWatchAnalyzer;
@@ -65,7 +64,6 @@ private:
     std::unique_ptr<hermes::PaigeRichTextSurface> surface_;
     std::unique_ptr<hermes::HunspellSpellService> spell_service_;
     std::unique_ptr<hermes::TaeMoodWatchAnalyzer> mood_watch_analyzer_;
-    std::unique_ptr<hermes::FlatFileNicknameStore> nickname_store_;
     std::unique_ptr<hermes::ComposeController> controller_;
     BTextControl* to_control_ = nullptr;
     BTextControl* cc_control_ = nullptr;

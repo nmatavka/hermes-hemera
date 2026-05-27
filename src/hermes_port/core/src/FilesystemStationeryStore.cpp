@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -47,9 +48,32 @@ std::string ReadWholeFile(const std::filesystem::path& path, std::string* error_
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+bool WriteWholeFile(const std::filesystem::path& path,
+                    std::string_view contents,
+                    std::string* error_message) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+        if (error_message) {
+            *error_message = "Unable to write stationery file: " + path.string();
+        }
+        return false;
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    return static_cast<bool>(output);
+}
+
 }  // namespace
 
+void FilesystemStationeryStore::SetRootDirectory(std::filesystem::path directory) {
+    root_directory_ = std::move(directory);
+}
+
+std::filesystem::path FilesystemStationeryStore::RootDirectory() const {
+    return root_directory_;
+}
+
 bool FilesystemStationeryStore::Discover(const std::filesystem::path& directory, std::string* error_message) {
+    root_directory_ = directory;
     templates_.clear();
     if (!std::filesystem::exists(directory)) {
         if (error_message) {
@@ -92,6 +116,84 @@ std::optional<StationeryTemplate> FilesystemStationeryStore::Find(std::string_vi
         }
     }
     return std::nullopt;
+}
+
+bool FilesystemStationeryStore::SaveTemplate(const StationeryTemplate& stationery,
+                                             std::string* error_message) {
+    if (root_directory_.empty()) {
+        if (error_message) {
+            *error_message = "Stationery root directory is not configured.";
+        }
+        return false;
+    }
+    if (stationery.name.empty()) {
+        if (error_message) {
+            *error_message = "Stationery name must not be empty.";
+        }
+        return false;
+    }
+
+    std::error_code create_error;
+    std::filesystem::create_directories(root_directory_, create_error);
+    if (create_error) {
+        if (error_message) {
+            *error_message = "Unable to create stationery directory: " + create_error.message();
+        }
+        return false;
+    }
+
+    const bool html = !stationery.body.html_fragment.empty();
+    const auto path = root_directory_ / (stationery.name + (html ? ".html" : ".sta"));
+    const auto existing = Find(stationery.name);
+    if (existing && existing->source_path != path) {
+        std::error_code remove_error;
+        std::filesystem::remove(existing->source_path, remove_error);
+    }
+
+    std::ostringstream stream;
+    if (!stationery.headers.to.empty()) {
+        stream << "To: " << stationery.headers.to << '\n';
+    }
+    if (!stationery.headers.cc.empty()) {
+        stream << "Cc: " << stationery.headers.cc << '\n';
+    }
+    if (!stationery.headers.bcc.empty()) {
+        stream << "Bcc: " << stationery.headers.bcc << '\n';
+    }
+    if (!stationery.headers.subject.empty()) {
+        stream << "Subject: " << stationery.headers.subject << '\n';
+    }
+    if (!stationery.persona.empty()) {
+        stream << "Persona: " << stationery.persona << '\n';
+    }
+    if (!stationery.signature_name.empty()) {
+        stream << "Signature: " << stationery.signature_name << '\n';
+    }
+    stream << '\n' << (html ? stationery.body.html_fragment : stationery.body.plain_text);
+
+    if (!WriteWholeFile(path, stream.str(), error_message)) {
+        return false;
+    }
+    return Discover(root_directory_, error_message);
+}
+
+bool FilesystemStationeryStore::DeleteTemplate(std::string_view name, std::string* error_message) {
+    const auto existing = Find(name);
+    if (!existing) {
+        if (error_message) {
+            *error_message = "Unknown stationery: " + std::string(name);
+        }
+        return false;
+    }
+    std::error_code remove_error;
+    std::filesystem::remove(existing->source_path, remove_error);
+    if (remove_error) {
+        if (error_message) {
+            *error_message = "Unable to delete stationery: " + remove_error.message();
+        }
+        return false;
+    }
+    return Discover(root_directory_, error_message);
 }
 
 std::optional<StationeryTemplate> FilesystemStationeryStore::ParseTemplate(const std::filesystem::path& path,

@@ -163,6 +163,18 @@ void FlatFileNicknameStore::AddOrReplace(const NicknameEntry& entry) {
     entries_.push_back(entry);
 }
 
+bool FlatFileNicknameStore::Remove(std::string_view nickname) {
+    const std::string normalized = Normalize(nickname);
+    const auto it = std::remove_if(entries_.begin(), entries_.end(), [&](const NicknameEntry& entry) {
+        return Normalize(entry.nickname) == normalized;
+    });
+    if (it == entries_.end()) {
+        return false;
+    }
+    entries_.erase(it, entries_.end());
+    return true;
+}
+
 std::string FlatFileNicknameStore::Normalize(std::string_view value) {
     std::string normalized;
     normalized.reserve(value.size());

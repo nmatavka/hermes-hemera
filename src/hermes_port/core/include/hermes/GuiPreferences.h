@@ -33,6 +33,7 @@ struct GuiPreferences {
     bool detached_task_error_window_open = false;
     std::string detached_task_status_window_frame;
     std::string detached_task_error_window_frame;
+    std::string detached_tool_window_layout;
 };
 
 GuiPreferences GuiPreferencesFromSettings(const SettingsStore& settings,

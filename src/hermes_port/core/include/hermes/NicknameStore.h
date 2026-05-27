@@ -26,6 +26,7 @@ public:
     virtual std::vector<NicknameEntry> Entries() const = 0;
     virtual std::optional<NicknameEntry> FindNickname(std::string_view nickname) const = 0;
     virtual void AddOrReplace(const NicknameEntry& entry) = 0;
+    virtual bool Remove(std::string_view nickname) = 0;
 };
 
 class FlatFileNicknameStore final : public NicknameStore {
@@ -35,6 +36,7 @@ public:
     std::vector<NicknameEntry> Entries() const override;
     std::optional<NicknameEntry> FindNickname(std::string_view nickname) const override;
     void AddOrReplace(const NicknameEntry& entry) override;
+    bool Remove(std::string_view nickname) override;
 
 private:
     static std::string Normalize(std::string_view value);

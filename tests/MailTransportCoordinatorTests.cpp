@@ -21,6 +21,7 @@
 #endif
 
 #include <atomic>
+#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +44,39 @@ public:
             }
         }
         return std::nullopt;
+    }
+
+    void SetAccounts(std::vector<hermes::AccountProfile> accounts) override {
+        accounts_ = std::move(accounts);
+    }
+
+    void AddOrReplace(const hermes::AccountProfile& account) override {
+        for (auto& existing : accounts_) {
+            if (existing.id == account.id) {
+                existing = account;
+                return;
+            }
+        }
+        accounts_.push_back(account);
+    }
+
+    bool Remove(std::string_view id) override {
+        const auto it = std::remove_if(accounts_.begin(), accounts_.end(), [&](const hermes::AccountProfile& account) {
+            return account.id == id;
+        });
+        if (it == accounts_.end()) {
+            return false;
+        }
+        accounts_.erase(it, accounts_.end());
+        return true;
+    }
+
+    bool SaveToSettings(hermes::SettingsStore&, std::string* = nullptr) const override {
+        return false;
+    }
+
+    bool SaveToIniFile(const std::filesystem::path&, std::string* = nullptr) const override {
+        return false;
     }
 
 private:

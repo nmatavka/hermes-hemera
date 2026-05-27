@@ -83,3 +83,55 @@ HERMES_TEST(LegacyAccountServiceProjectsImapDeletionAndDownloadSettings) {
     HERMES_CHECK(account.imap_omit_attachments);
     HERMES_CHECK_EQ(account.imap_download_mode, hermes::ImapDownloadMode::kMinimalHeaders);
 }
+
+HERMES_TEST(LegacyAccountServiceCanRoundTripWritablePersonalities) {
+    hermes::LegacyAccountService service;
+    hermes::AccountProfile primary;
+    primary.id = "primary@example.com";
+    primary.display_name = "Primary";
+    primary.email_address = "primary@example.com";
+    primary.login_name = "primary";
+    primary.incoming_server = "pop.example.com";
+    primary.outgoing_server = "smtp.example.com";
+    primary.incoming_port = 995;
+    primary.outgoing_port = 465;
+    primary.uses_pop = true;
+    primary.incoming_security = hermes::TransportSecurityMode::kImplicitTls;
+    primary.outgoing_security = hermes::TransportSecurityMode::kImplicitTls;
+
+    hermes::AccountProfile work;
+    work.id = "Persona-Work";
+    work.display_name = "Work";
+    work.email_address = "work@example.com";
+    work.login_name = "work";
+    work.incoming_server = "imap.example.com";
+    work.outgoing_server = "smtp.work.example.com";
+    work.incoming_port = 993;
+    work.outgoing_port = 587;
+    work.uses_imap = true;
+    work.incoming_security = hermes::TransportSecurityMode::kImplicitTls;
+    work.outgoing_security = hermes::TransportSecurityMode::kStartTls;
+    work.imap_auth = hermes::ImapAuthMode::kKerberos;
+    work.smtp_auth = hermes::SmtpAuthMode::kLogin;
+    work.smtp_auth_allowed = true;
+    work.kerberos.service_name = "imap";
+    work.kerberos.realm = "EXAMPLE.COM";
+
+    service.SetAccounts({primary});
+    service.AddOrReplace(work);
+    HERMES_CHECK(service.Remove("missing") == false);
+
+    hermes::IniSettingsStore settings;
+    std::string error_message;
+    HERMES_CHECK(service.SaveToSettings(settings, &error_message));
+
+    hermes::LegacyAccountService reloaded;
+    HERMES_CHECK(reloaded.LoadFromSettings(settings));
+    HERMES_CHECK_EQ(reloaded.Accounts().size(), static_cast<std::size_t>(2));
+
+    const auto saved_work = reloaded.FindById("Persona-Work");
+    HERMES_CHECK(static_cast<bool>(saved_work));
+    HERMES_CHECK(saved_work->uses_imap);
+    HERMES_CHECK_EQ(saved_work->imap_auth, hermes::ImapAuthMode::kKerberos);
+    HERMES_CHECK_EQ(saved_work->outgoing_security, hermes::TransportSecurityMode::kStartTls);
+}

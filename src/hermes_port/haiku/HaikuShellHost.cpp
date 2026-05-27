@@ -3,12 +3,15 @@
 #include <Application.h>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <system_error>
 
 #include "HaikuComposeWindow.h"
 #include "HaikuMainWindow.h"
+#include "HaikuToolWindow.h"
+#include "hermes/FilterEngine.h"
 
 namespace hermes::haiku_port {
 
@@ -151,8 +154,13 @@ HaikuShellHost::HaikuShellHost()
       draft_store_(std::make_unique<FilesystemDraftStore>(DataRoot() / "drafts")),
       mailbox_store_(std::make_unique<FilesystemMailboxStore>(DataRoot())),
       message_store_(std::make_unique<FilesystemMessageStore>(DataRoot())),
+      nickname_store_(std::make_unique<FlatFileNicknameStore>()),
       stationery_store_(std::make_unique<FilesystemStationeryStore>()),
       signature_store_(std::make_unique<FilesystemSignatureStore>()),
+      address_book_service_(std::make_unique<MemoryAddressBookService>()),
+      filter_store_(std::make_unique<FilesystemFilterStore>()),
+      filter_report_store_(std::make_unique<FilesystemFilterReportStore>()),
+      link_history_store_(std::make_unique<FilesystemLinkHistoryStore>()),
       tls_provider_(std::make_unique<OpenSslTlsProvider>()),
       transport_service_(std::make_unique<SocketTransportService>(tls_provider_.get())),
       transport_coordinator_(std::make_unique<MailTransportCoordinator>(*account_service_,
@@ -164,11 +172,15 @@ HaikuShellHost::HaikuShellHost()
                                                                         *tls_provider_,
                                                                         *task_model_,
                                                                         imap_action_store_.get())),
-      paige_runtime_(std::make_unique<PaigeRuntime>()) {
+      paige_runtime_(std::make_unique<PaigeRuntime>()),
+      directory_services_(std::make_unique<LocalDirectoryServiceCatalog>(nickname_store_.get(),
+                                                                         address_book_service_.get())) {
     std::string ignored;
     (void)paige_runtime_->Initialize(&ignored);
     EnsureWorkspaceDirectories();
     LoadBootstrapAccounts();
+    LoadToolData();
+    ApplyPendingFilters();
     ReloadWorkspace();
 }
 
@@ -201,24 +213,28 @@ bool HaikuShellHost::SendQueued() {
 
 bool HaikuShellHost::CheckMail() {
     const auto summary = transport_coordinator_->CheckMail();
+    ApplyPendingFilters();
     ReloadWorkspace();
     return summary.success;
 }
 
 bool HaikuShellHost::SendAndReceive() {
     const auto summary = transport_coordinator_->SendAndReceive();
+    ApplyPendingFilters();
     ReloadWorkspace();
     return summary.success;
 }
 
 bool HaikuShellHost::RefreshMailbox(std::string_view mailbox_id) {
     const auto summary = transport_coordinator_->RefreshMailbox(mailbox_id, false);
+    ApplyPendingFilters();
     ReloadWorkspace();
     return summary.success;
 }
 
 bool HaikuShellHost::ResyncMailbox(std::string_view mailbox_id) {
     const auto summary = transport_coordinator_->RefreshMailbox(mailbox_id, true);
+    ApplyPendingFilters();
     ReloadWorkspace();
     return summary.success;
 }
@@ -404,12 +420,36 @@ FilesystemMessageStore& HaikuShellHost::Messages() {
     return *message_store_;
 }
 
+FlatFileNicknameStore& HaikuShellHost::Nicknames() {
+    return *nickname_store_;
+}
+
 FilesystemStationeryStore& HaikuShellHost::Stationery() {
     return *stationery_store_;
 }
 
 FilesystemSignatureStore& HaikuShellHost::Signatures() {
     return *signature_store_;
+}
+
+MemoryAddressBookService& HaikuShellHost::AddressBook() {
+    return *address_book_service_;
+}
+
+FilesystemFilterStore& HaikuShellHost::Filters() {
+    return *filter_store_;
+}
+
+FilesystemFilterReportStore& HaikuShellHost::FilterReport() {
+    return *filter_report_store_;
+}
+
+FilesystemLinkHistoryStore& HaikuShellHost::LinkHistory() {
+    return *link_history_store_;
+}
+
+LocalDirectoryServiceCatalog& HaikuShellHost::DirectoryServices() {
+    return *directory_services_;
 }
 
 PaigeRuntime& HaikuShellHost::Runtime() {
@@ -439,12 +479,21 @@ std::vector<ImapActionRecord> HaikuShellHost::QueuedImapActions() const {
     return actions;
 }
 
+std::filesystem::path HaikuShellHost::DataRootPath() const {
+    return DataRoot();
+}
+
+std::filesystem::path HaikuShellHost::SettingsFilePath() const {
+    return SettingsPath();
+}
+
 void HaikuShellHost::ShowMainWindow() {
     if (!main_window_) {
         main_window_ = std::make_unique<HaikuMainWindow>(*this);
     }
 
     main_window_->Show();
+    OpenToolWindow("mailboxes");
 
     if (pending_composer_message_) {
         ShowComposeWindow(*pending_composer_message_);
@@ -566,6 +615,8 @@ void HaikuShellHost::EnsureWorkspaceDirectories() {
     std::error_code ignored;
     std::filesystem::create_directories(DataRoot(), ignored);
     std::filesystem::create_directories(DataRoot() / "drafts", ignored);
+    std::filesystem::create_directories(DataRoot() / "Stationery", ignored);
+    std::filesystem::create_directories(DataRoot() / "Signatures", ignored);
 
     std::string error_message;
     mailbox_store_->EnsureMailbox({"inbox", "Inbox", {}, "", MailboxProtocol::kLocal, "", false, true, 0},
@@ -574,11 +625,7 @@ void HaikuShellHost::EnsureWorkspaceDirectories() {
                                   &error_message);
     mailbox_store_->EnsureMailbox({"drafts", "Drafts", {}, "", MailboxProtocol::kLocal, "", false, true, 0},
                                   &error_message);
-
-    const auto stationery_root = SourceRoot() / "tests" / "fixtures" / "legacy" / "compose" / "stationery";
-    const auto signature_root = SourceRoot() / "tests" / "fixtures" / "legacy" / "compose" / "signatures";
-    stationery_store_->Discover(stationery_root, nullptr);
-    signature_store_->Discover(signature_root, nullptr);
+    BootstrapTemplatesIfNeeded();
 }
 
 void HaikuShellHost::LoadBootstrapAccounts() {
@@ -611,6 +658,188 @@ bool HaikuShellHost::PersistSettings(std::string* error_message) {
     std::error_code ignored;
     std::filesystem::create_directories(DataRoot(), ignored);
     return settings_->SaveToFile(SettingsPath(), error_message);
+}
+
+void HaikuShellHost::RecordAttachmentLaunch(std::string_view title,
+                                            const std::filesystem::path& path,
+                                            std::string_view source_context) {
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+    link_history_store_->AddEntry({"attachment-" + std::to_string(static_cast<long long>(now)),
+                                   LinkHistoryKind::kAttachment,
+                                   std::string(title),
+                                   path.string(),
+                                   std::string(source_context),
+                                   true,
+                                   static_cast<std::int64_t>(now)});
+    std::string ignored;
+    link_history_store_->SaveToFile(DataRoot() / "LinkHistory.ini", &ignored);
+}
+
+bool HaikuShellHost::OpenToolWindow(std::string_view tool_id) {
+    const std::string requested(tool_id);
+    for (const auto& window : tool_windows_) {
+        if (window && window->ToolId() == requested) {
+            window->Refresh();
+            if (window->IsHidden()) {
+                window->Show();
+            } else {
+                window->Activate();
+            }
+            return true;
+        }
+    }
+
+    std::string title = requested;
+    if (requested == "mailboxes") {
+        title = "Mailboxes";
+    } else if (requested == "task-status") {
+        title = "Task Status";
+    } else if (requested == "task-errors") {
+        title = "Task Errors";
+    } else if (requested == "signatures") {
+        title = "Signatures";
+    } else if (requested == "stationery") {
+        title = "Stationery";
+    } else if (requested == "nicknames") {
+        title = "Nicknames";
+    } else if (requested == "personalities") {
+        title = "Personalities";
+    } else if (requested == "filters") {
+        title = "Filters";
+    } else if (requested == "filter-report") {
+        title = "Filter Report";
+    } else if (requested == "directory-services") {
+        title = "Directory Services";
+    } else if (requested == "file-browser") {
+        title = "File Browser";
+    } else if (requested == "link-history") {
+        title = "Link History";
+    }
+
+    auto window = std::make_unique<HaikuToolWindow>(*this, requested, title);
+    window->Show();
+    tool_windows_.push_back(std::move(window));
+    return true;
+}
+
+void HaikuShellHost::LoadToolData() {
+    std::string ignored;
+    nickname_store_->LoadFromFile(DataRoot() / "Nicknames.txt", &ignored);
+    filter_store_->LoadFromFile(DataRoot() / "Filters.ini", &ignored);
+    filter_report_store_->LoadFromFile(DataRoot() / "FilterReport.ini", &ignored);
+    link_history_store_->LoadFromFile(DataRoot() / "LinkHistory.ini", &ignored);
+}
+
+void HaikuShellHost::BootstrapTemplatesIfNeeded() {
+    const auto fixture_stationery_root =
+        SourceRoot() / "tests" / "fixtures" / "legacy" / "compose" / "stationery";
+    const auto fixture_signature_root =
+        SourceRoot() / "tests" / "fixtures" / "legacy" / "compose" / "signatures";
+    const auto live_stationery_root = DataRoot() / "Stationery";
+    const auto live_signature_root = DataRoot() / "Signatures";
+
+    stationery_store_->SetRootDirectory(live_stationery_root);
+    signature_store_->SetRootDirectory(live_signature_root);
+
+    std::error_code ignored;
+    std::filesystem::create_directories(live_stationery_root, ignored);
+    std::filesystem::create_directories(live_signature_root, ignored);
+
+    if (std::filesystem::is_empty(live_stationery_root)) {
+        FilesystemStationeryStore fixture_store;
+        if (fixture_store.Discover(fixture_stationery_root, nullptr)) {
+            for (const auto& entry : fixture_store.Templates()) {
+                stationery_store_->SaveTemplate(entry, nullptr);
+            }
+        }
+    }
+
+    if (std::filesystem::is_empty(live_signature_root)) {
+        FilesystemSignatureStore fixture_store;
+        if (fixture_store.Discover(fixture_signature_root, nullptr)) {
+            for (const auto& entry : fixture_store.Templates()) {
+                signature_store_->SaveTemplate(entry, nullptr);
+            }
+        }
+    }
+
+    stationery_store_->Discover(live_stationery_root, nullptr);
+    signature_store_->Discover(live_signature_root, nullptr);
+}
+
+void HaikuShellHost::ApplyPendingFilters() {
+    if (filter_store_->Rules().empty()) {
+        return;
+    }
+
+    RuleBasedFilterEngine engine;
+    engine.SetRules(filter_store_->Rules());
+    std::string ignored;
+
+    for (const auto& mailbox : mailbox_store_->ListMailboxes()) {
+        for (auto message : message_store_->ListMessages(mailbox.id)) {
+            if (message.delivery_state != MessageDeliveryState::kReceived || message.filters_applied) {
+                continue;
+            }
+
+            const auto result = engine.Evaluate(message);
+            message.filters_applied = true;
+            if (result.mark_as_read) {
+                message.unread = false;
+            }
+
+            std::string destination_mailbox = mailbox.id;
+            if (result.mark_as_junk) {
+                destination_mailbox = "junk";
+                mailbox_store_->EnsureMailbox({"junk",
+                                               "Junk",
+                                               {},
+                                               message.account_id,
+                                               MailboxProtocol::kLocal,
+                                               "",
+                                               false,
+                                               true,
+                                               0},
+                                              &ignored);
+            }
+            if (result.destination_mailbox) {
+                destination_mailbox = *result.destination_mailbox;
+                mailbox_store_->EnsureMailbox({destination_mailbox,
+                                               destination_mailbox,
+                                               {},
+                                               message.account_id,
+                                               MailboxProtocol::kLocal,
+                                               "",
+                                               false,
+                                               false,
+                                               0},
+                                              &ignored);
+            }
+
+            message_store_->SaveMessage(message, &ignored);
+            if (destination_mailbox != mailbox.id) {
+                message_store_->MoveMessage(mailbox.id, message.id, destination_mailbox, &ignored);
+            }
+
+            if (result.matched) {
+                const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+                filter_report_store_->AddEntry({"filter-" + message.id,
+                                                message.id,
+                                                mailbox.id,
+                                                mailbox.display_name,
+                                                message.sender,
+                                                message.subject,
+                                                result.matched_rules,
+                                                static_cast<std::int64_t>(now)});
+            }
+        }
+    }
+
+    filter_report_store_->SaveToFile(DataRoot() / "FilterReport.ini", nullptr);
 }
 
 }  // namespace hermes::haiku_port

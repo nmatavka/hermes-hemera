@@ -165,11 +165,10 @@ HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const Compose
           SourceRoot() / "third_party" / "hunspell" / "tests" / "base_utf.dic")),
       mood_watch_analyzer_(std::make_unique<hermes::TaeMoodWatchAnalyzer>(
           SourceRoot() / "src" / "legacy_transplants" / "tae" / "FlameLex.dat")),
-      nickname_store_(std::make_unique<hermes::FlatFileNicknameStore>()),
       controller_(std::make_unique<hermes::ComposeController>(*surface_,
                                                               spell_service_.get(),
                                                               mood_watch_analyzer_.get(),
-                                                              nickname_store_.get(),
+                                                              &shell_host.Nicknames(),
                                                               &shell_host.Stationery(),
                                                               &shell_host.Signatures())) {
     std::string ignored;

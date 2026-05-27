@@ -41,6 +41,7 @@ add_executable(
     SignatureStoreTests.cpp
     ToolbarConfigurationTests.cpp
     TransportServiceTests.cpp
+    WorkflowToolStoreTests.cpp
     WorkspaceModelTests.cpp
 )
 

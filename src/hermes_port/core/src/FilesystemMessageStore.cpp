@@ -335,6 +335,7 @@ bool FilesystemMessageStore::SaveMessage(const MessageRecord& message, std::stri
     output << "X-Hermes-Flagged: " << (message.flagged ? "1" : "0") << '\n';
     output << "X-Hermes-Deleted: " << (message.deleted ? "1" : "0") << '\n';
     output << "X-Hermes-Answered: " << (message.answered ? "1" : "0") << '\n';
+    output << "X-Hermes-Filters-Applied: " << (message.filters_applied ? "1" : "0") << '\n';
     output << "X-Hermes-Last-Error: " << message.last_error << '\n';
     output << "X-Hermes-Created-At: " << message.created_at << '\n';
     output << "X-Hermes-Updated-At: " << message.updated_at << '\n';
@@ -594,6 +595,8 @@ std::optional<MessageRecord> FilesystemMessageStore::ReadMessageFile(const std::
                 message.deleted = HeaderValue(line) != "0";
             } else if (line.rfind("X-Hermes-Answered:", 0) == 0) {
                 message.answered = HeaderValue(line) != "0";
+            } else if (line.rfind("X-Hermes-Filters-Applied:", 0) == 0) {
+                message.filters_applied = HeaderValue(line) != "0";
             } else if (line.rfind("X-Hermes-Last-Error:", 0) == 0) {
                 message.last_error = HeaderValue(line);
             } else if (line.rfind("X-Hermes-Created-At:", 0) == 0) {

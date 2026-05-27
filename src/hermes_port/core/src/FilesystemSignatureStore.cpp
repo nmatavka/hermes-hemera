@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 
 namespace hermes {
@@ -46,6 +47,20 @@ std::string ReadWholeFile(const std::filesystem::path& path, std::string* error_
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+bool WriteWholeFile(const std::filesystem::path& path,
+                    std::string_view contents,
+                    std::string* error_message) {
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+        if (error_message) {
+            *error_message = "Unable to write signature file: " + path.string();
+        }
+        return false;
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    return static_cast<bool>(output);
+}
+
 std::string StripTags(std::string_view html) {
     std::string result;
     result.reserve(html.size());
@@ -70,7 +85,16 @@ std::string StripTags(std::string_view html) {
 
 }  // namespace
 
+void FilesystemSignatureStore::SetRootDirectory(std::filesystem::path directory) {
+    root_directory_ = std::move(directory);
+}
+
+std::filesystem::path FilesystemSignatureStore::RootDirectory() const {
+    return root_directory_;
+}
+
 bool FilesystemSignatureStore::Discover(const std::filesystem::path& directory, std::string* error_message) {
+    root_directory_ = directory;
     templates_.clear();
     if (!std::filesystem::exists(directory)) {
         if (error_message) {
@@ -113,6 +137,67 @@ std::optional<SignatureTemplate> FilesystemSignatureStore::Find(std::string_view
         }
     }
     return std::nullopt;
+}
+
+bool FilesystemSignatureStore::SaveTemplate(const SignatureTemplate& signature, std::string* error_message) {
+    if (root_directory_.empty()) {
+        if (error_message) {
+            *error_message = "Signature root directory is not configured.";
+        }
+        return false;
+    }
+    if (signature.name.empty()) {
+        if (error_message) {
+            *error_message = "Signature name must not be empty.";
+        }
+        return false;
+    }
+
+    std::error_code create_error;
+    std::filesystem::create_directories(root_directory_, create_error);
+    if (create_error) {
+        if (error_message) {
+            *error_message = "Unable to create signature directory: " + create_error.message();
+        }
+        return false;
+    }
+
+    SignatureTemplate updated = signature;
+    if (updated.body.plain_text.empty() && !updated.body.html_fragment.empty()) {
+        updated.body.plain_text = StripTags(updated.body.html_fragment);
+    }
+
+    const bool html = !updated.body.html_fragment.empty();
+    const auto path = root_directory_ / (updated.name + (html ? ".html" : ".sig"));
+    const auto old = Find(updated.name);
+    if (old && old->source_path != path) {
+        std::error_code remove_error;
+        std::filesystem::remove(old->source_path, remove_error);
+    }
+
+    if (!WriteWholeFile(path, html ? updated.body.html_fragment : updated.body.plain_text, error_message)) {
+        return false;
+    }
+    return Discover(root_directory_, error_message);
+}
+
+bool FilesystemSignatureStore::DeleteTemplate(std::string_view name, std::string* error_message) {
+    const auto existing = Find(name);
+    if (!existing) {
+        if (error_message) {
+            *error_message = "Unknown signature: " + std::string(name);
+        }
+        return false;
+    }
+    std::error_code remove_error;
+    std::filesystem::remove(existing->source_path, remove_error);
+    if (remove_error) {
+        if (error_message) {
+            *error_message = "Unable to delete signature: " + remove_error.message();
+        }
+        return false;
+    }
+    return Discover(root_directory_, error_message);
 }
 
 std::optional<SignatureTemplate> FilesystemSignatureStore::ParseTemplate(const std::filesystem::path& path,
