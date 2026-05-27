@@ -6,6 +6,8 @@
 #include "hermes/NicknameStore.h"
 #include "hermes/SignatureStore.h"
 
+#include <fstream>
+
 namespace {
 
 class FakeSpellService final : public hermes::SpellService {
@@ -200,4 +202,32 @@ HERMES_TEST(ComposeControllerReplacesAndDetachesManagedSignatures) {
     HERMES_CHECK(surface.SetSelection({managed.start + 2, 0}));
     HERMES_CHECK(controller.PasteText("x"));
     HERMES_CHECK(!controller.Snapshot().managed_signature.attached);
+}
+
+HERMES_TEST(ComposeControllerAddsAndRemovesAttachments) {
+    hermes::tests::ScopedTempDirectory temp("hermes-compose-attachments");
+    const auto source_attachment = temp.Path() / "brief.txt";
+    {
+        std::ofstream output(source_attachment);
+        output << "brief attachment";
+    }
+
+    hermes::MemoryRichTextSurface surface;
+    hermes::ComposeMessage message;
+    message.id = "compose-4";
+    message.body.plain_text = "Attachment test";
+
+    hermes::ComposeController controller(surface, nullptr, nullptr, nullptr, nullptr, nullptr);
+    HERMES_CHECK(controller.Load(message));
+    HERMES_CHECK(controller.AddAttachment({"brief.txt",
+                                          source_attachment,
+                                          "text/plain",
+                                          0,
+                                          "cid-brief",
+                                          false}));
+    HERMES_CHECK_EQ(controller.Attachments().size(), static_cast<std::size_t>(1));
+    HERMES_CHECK_EQ(controller.Attachments().front().display_name, std::string("brief.txt"));
+    HERMES_CHECK(controller.Attachments().front().size > 0);
+    HERMES_CHECK(controller.RemoveAttachment(0));
+    HERMES_CHECK(controller.Attachments().empty());
 }

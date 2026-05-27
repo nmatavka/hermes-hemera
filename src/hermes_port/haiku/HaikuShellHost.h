@@ -85,6 +85,8 @@ public:
     PaigeRuntime& Runtime();
     MailTransportCoordinator& TransportCoordinator();
     const std::optional<ComposeMessage>& PendingComposerMessage() const;
+    std::optional<MessageDetail> WorkspaceMessageDetail(std::string_view message_id) const;
+    std::vector<ImapActionRecord> QueuedImapActions() const;
 
     void ShowMainWindow();
     void ReloadWorkspace();

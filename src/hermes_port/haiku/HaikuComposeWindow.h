@@ -8,6 +8,7 @@
 #include "hermes/ComposeMessage.h"
 
 class BListView;
+class BFilePanel;
 class BMenuField;
 class BMessageRunner;
 class BStringView;
@@ -41,10 +42,13 @@ private:
     void SyncHeaderControlsFromController();
     void SyncMenuFieldsFromController();
     void RefreshDiagnostics();
+    void RefreshAttachments();
     void RefreshBanner();
     void RefreshFromController(bool reload_editor);
     void ResetIdleClock();
     void HandleBodyEdited();
+    void HandleAddAttachment();
+    void HandleRemoveAttachment();
     void HandleSaveDraft();
     void HandleQueue(bool allow_warnings);
     void NavigateToDiagnostic(int32 index);
@@ -65,7 +69,9 @@ private:
     BMenuField* signature_field_ = nullptr;
     BStringView* banner_view_ = nullptr;
     BListView* diagnostics_list_ = nullptr;
+    BListView* attachment_list_ = nullptr;
     PaigeEditorView* editor_view_ = nullptr;
+    std::unique_ptr<BFilePanel> attachment_open_panel_;
     std::unique_ptr<BMessageRunner> idle_runner_;
     bigtime_t last_edit_time_ = 0;
 };

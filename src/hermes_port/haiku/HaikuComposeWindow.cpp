@@ -8,6 +8,9 @@
 
 #include <Alert.h>
 #include <Application.h>
+#include <Button.h>
+#include <Entry.h>
+#include <FilePanel.h>
 #include <LayoutBuilder.h>
 #include <ListItem.h>
 #include <ListView.h>
@@ -19,6 +22,7 @@
 #include <MessageRunner.h>
 #include <Messenger.h>
 #include <PopUpMenu.h>
+#include <Path.h>
 #include <ScrollView.h>
 #include <SplitView.h>
 #include <StringItem.h>
@@ -55,6 +59,9 @@ constexpr uint32_t kSignatureMessage = 'sgnt';
 constexpr uint32_t kIdleTickMessage = 'idlt';
 constexpr uint32_t kDiagnosticMessage = 'diag';
 constexpr uint32_t kHeaderModifiedMessage = 'hedr';
+constexpr uint32_t kAddAttachmentMessage = 'atag';
+constexpr uint32_t kRemoveAttachmentMessage = 'atrm';
+constexpr uint32_t kAddAttachmentSelected = 'atrs';
 
 std::filesystem::path SourceRoot() {
 #ifdef HERMES_SOURCE_ROOT
@@ -81,6 +88,15 @@ std::string ControlValue(BTextControl* control) {
 
 std::string DiagnosticSummary(const hermes::ComposeVisualDiagnostic& diagnostic) {
     return diagnostic.label + ": " + diagnostic.message;
+}
+
+std::string AttachmentSummary(const hermes::ComposeAttachment& attachment) {
+    std::ostringstream stream;
+    stream << (attachment.display_name.empty() ? "(unnamed attachment)" : attachment.display_name);
+    if (attachment.size > 0) {
+        stream << " (" << attachment.size << " bytes)";
+    }
+    return stream.str();
 }
 
 }  // namespace
@@ -132,6 +148,11 @@ HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const Compose
     spelling_menu->AddItem(new BMenuItem("Replace Current", new BMessage(kReplaceCurrentMessage)));
     menu_bar->AddItem(spelling_menu);
 
+    auto* attachments_menu = new BMenu("Attachments");
+    attachments_menu->AddItem(new BMenuItem("Add Attachment", new BMessage(kAddAttachmentMessage)));
+    attachments_menu->AddItem(new BMenuItem("Remove Attachment", new BMessage(kRemoveAttachmentMessage)));
+    menu_bar->AddItem(attachments_menu);
+
     to_control_ = new BTextControl("to-control", "To", "", nullptr);
     cc_control_ = new BTextControl("cc-control", "Cc", "", nullptr);
     bcc_control_ = new BTextControl("bcc-control", "Bcc", "", nullptr);
@@ -157,17 +178,25 @@ HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const Compose
     banner_view_ = new BStringView("compose-banner", "Preparing compose window...");
     diagnostics_list_ = new BListView("compose-diagnostics");
     diagnostics_list_->SetSelectionMessage(new BMessage(kDiagnosticMessage));
+    attachment_list_ = new BListView("compose-attachments");
 
     editor_view_ = new PaigeEditorView(*surface_);
     editor_view_->SetChangeCallback([this]() { HandleBodyEdited(); });
 
     auto* diagnostics_scroll =
         new BScrollView("compose-diagnostics-scroll", diagnostics_list_, 0, false, true);
+    auto* attachment_scroll =
+        new BScrollView("compose-attachments-scroll", attachment_list_, 0, false, true);
     auto* editor_scroll = new BScrollView("compose-body-scroll", editor_view_, 0, true, true);
+    auto* add_attachment_button =
+        new BButton("compose-add-attachment", "Add Attachment", new BMessage(kAddAttachmentMessage));
+    auto* remove_attachment_button =
+        new BButton("compose-remove-attachment", "Remove Attachment", new BMessage(kRemoveAttachmentMessage));
 
     auto* diagnostics_split = new BSplitView(B_VERTICAL);
     diagnostics_split->AddChild(editor_scroll);
     diagnostics_split->AddChild(diagnostics_scroll);
+    diagnostics_split->AddChild(attachment_scroll);
 
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
         .Add(menu_bar)
@@ -184,6 +213,10 @@ HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const Compose
                 .Add(signature_field_)
             .End()
             .Add(banner_view_)
+            .AddGroup(B_HORIZONTAL, 8)
+                .Add(add_attachment_button)
+                .Add(remove_attachment_button)
+            .End()
             .Add(diagnostics_split)
         .End();
 
@@ -261,6 +294,43 @@ void HaikuComposeWindow::MessageReceived(BMessage* message) {
             const auto suggestions = controller_->SuggestionsForCurrentIssue();
             if (!suggestions.empty() && controller_->ReplaceCurrent(suggestions.front())) {
                 RefreshFromController(true);
+            }
+            return;
+        }
+
+        case kAddAttachmentMessage:
+            HandleAddAttachment();
+            return;
+
+        case kRemoveAttachmentMessage:
+            HandleRemoveAttachment();
+            return;
+
+        case kAddAttachmentSelected: {
+            std::string errors;
+            bool added = false;
+            entry_ref ref;
+            for (int32 index = 0; message->FindRef("refs", index, &ref) == B_OK; ++index) {
+                BEntry entry(&ref, true);
+                BPath path;
+                if (entry.GetPath(&path) != B_OK) {
+                    continue;
+                }
+                std::string error_message;
+                if (controller_->AddAttachment({path.Leaf(), path.Path(), "", 0, "", false}, &error_message)) {
+                    added = true;
+                    continue;
+                }
+                if (!errors.empty()) {
+                    errors += '\n';
+                }
+                errors += error_message;
+            }
+            if (added) {
+                RefreshFromController(false);
+            }
+            if (!errors.empty()) {
+                BAlert("add-attachment-alert", errors.c_str(), "OK")->Go();
             }
             return;
         }
@@ -397,6 +467,13 @@ void HaikuComposeWindow::RefreshDiagnostics() {
     }
 }
 
+void HaikuComposeWindow::RefreshAttachments() {
+    attachment_list_->MakeEmpty();
+    for (const auto& attachment : controller_->Attachments()) {
+        attachment_list_->AddItem(new BStringItem(AttachmentSummary(attachment).c_str()));
+    }
+}
+
 void HaikuComposeWindow::RefreshBanner() {
     const auto banner = controller_->StatusBanner();
     if (banner) {
@@ -422,6 +499,7 @@ void HaikuComposeWindow::RefreshFromController(bool reload_editor) {
     SyncHeaderControlsFromController();
     SyncMenuFieldsFromController();
     RefreshDiagnostics();
+    RefreshAttachments();
     RefreshBanner();
     if (reload_editor) {
         editor_view_->ReloadFromSurface();
@@ -439,6 +517,31 @@ void HaikuComposeWindow::HandleBodyEdited() {
     controller_->MarkBodyEdited();
     ResetIdleClock();
     RefreshFromController(true);
+}
+
+void HaikuComposeWindow::HandleAddAttachment() {
+    if (!attachment_open_panel_) {
+        attachment_open_panel_ = std::make_unique<BFilePanel>(B_OPEN_PANEL,
+                                                              new BMessenger(this),
+                                                              nullptr,
+                                                              B_FILE_NODE,
+                                                              true,
+                                                              new BMessage(kAddAttachmentSelected),
+                                                              nullptr,
+                                                              false,
+                                                              true);
+    }
+    attachment_open_panel_->Show();
+}
+
+void HaikuComposeWindow::HandleRemoveAttachment() {
+    const int32 selection = attachment_list_->CurrentSelection();
+    if (selection < 0) {
+        return;
+    }
+    if (controller_->RemoveAttachment(static_cast<std::size_t>(selection))) {
+        RefreshFromController(false);
+    }
 }
 
 void HaikuComposeWindow::HandleSaveDraft() {

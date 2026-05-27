@@ -39,6 +39,7 @@ add_executable(
     SearchAndJunkTests.cpp
     SignatureStoreTests.cpp
     TransportServiceTests.cpp
+    WorkspaceModelTests.cpp
 )
 
 target_include_directories(
@@ -102,6 +103,37 @@ if(HERMES_BUILD_HAIKU_SHELL AND CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     add_test(
         NAME hermes_haiku_compose_smoke
         COMMAND hermes_haiku_compose_smoke
+    )
+
+    add_executable(
+        hermes_haiku_workflow_smoke
+        HaikuWorkflowSmokeTest.cpp
+    )
+
+    target_include_directories(
+        hermes_haiku_workflow_smoke
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/src/hermes_port/haiku
+    )
+
+    target_link_libraries(
+        hermes_haiku_workflow_smoke
+        PRIVATE
+            hermes::legacy_transplants
+            hermes::port_paige
+            be
+    )
+
+    target_compile_definitions(
+        hermes_haiku_workflow_smoke
+        PRIVATE
+            HERMES_SOURCE_ROOT="${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME hermes_haiku_workflow_smoke
+        COMMAND hermes_haiku_workflow_smoke
     )
 
     if(HERMES_ENABLE_NATIVE_PAIGE)

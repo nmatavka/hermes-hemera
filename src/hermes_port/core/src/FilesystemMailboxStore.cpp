@@ -136,6 +136,9 @@ bool FilesystemMailboxStore::RenameMailbox(std::string_view mailbox_id,
     updated.id = std::string(new_mailbox_id);
     if (!new_display_name.empty()) {
         updated.display_name = std::string(new_display_name);
+        if (updated.protocol == MailboxProtocol::kImap && updated.is_remote) {
+            updated.remote_name = std::string(new_display_name);
+        }
     }
     return EnsureMailbox(updated, error_message);
 }

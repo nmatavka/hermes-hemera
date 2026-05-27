@@ -2078,6 +2078,14 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
             {
                 const std::string renamed_mailbox_id = LocalMailboxIdForImap(account->id, action.rename_target);
                 if (mailbox_store.GetMailbox(renamed_mailbox_id).has_value()) {
+                    if (const auto existing = mailbox_store.GetMailbox(renamed_mailbox_id)) {
+                        MailboxRecord updated = *existing;
+                        updated.display_name = action.rename_target;
+                        updated.remote_name = action.rename_target;
+                        if (!mailbox_store.EnsureMailbox(updated, error_message)) {
+                            return false;
+                        }
+                    }
                     return true;
                 }
                 if (mailbox_store.GetMailbox(action.mailbox_id).has_value()) {
@@ -2414,6 +2422,7 @@ MailTransportSummary MailTransportCoordinator::SendAndReceive() {
 
 MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view mailbox_id, bool full_resync) {
     MailTransportSummary summary;
+    stop_requested_ = false;
     const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
     if (!mailbox || mailbox->protocol != MailboxProtocol::kImap) {
         summary.error_message = "Mailbox is not an IMAP mailbox.";
@@ -2430,6 +2439,51 @@ MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view m
     if (!password) {
         summary.error_message = "Missing incoming credential for account " + account->id;
         return summary;
+    }
+
+    if (imap_action_store_) {
+        for (auto action : imap_action_store_->ListActions()) {
+            if (action.account_id != account->id ||
+                action.state == ImapActionState::kCompleted ||
+                action.state == ImapActionState::kCancelled) {
+                continue;
+            }
+
+            action.state = ImapActionState::kRunning;
+            action.updated_at = NowUnixSeconds();
+            ++action.attempts;
+            imap_action_store_->SaveAction(action, nullptr);
+
+            std::string action_error;
+            TaskScope task(task_model_,
+                           action.kind == ImapActionKind::kFetchAttachment
+                                   ? MailTaskKind::kAttachmentFetch
+                                   : MailTaskKind::kImapMutation,
+                           action.account_id,
+                           "Replay IMAP action",
+                           "Running");
+            if (ReplaySingleImapAction(action,
+                                       account_service_,
+                                       credential_store_,
+                                       sync_state_store_,
+                                       mailbox_store_,
+                                       message_store_,
+                                       transport_service_,
+                                       tls_provider_,
+                                       &action_error)) {
+                task.Complete("Complete");
+                imap_action_store_->DeleteAction(action.id, nullptr);
+            } else {
+                task.Fail("Failed", action_error);
+                action.state = ImapActionState::kFailed;
+                action.updated_at = NowUnixSeconds();
+                action.last_error = action_error;
+                imap_action_store_->SaveAction(action, nullptr);
+                if (!action_error.empty()) {
+                    summary.warnings.push_back(action_error);
+                }
+            }
+        }
     }
 
     ImapMailboxSyncState state =

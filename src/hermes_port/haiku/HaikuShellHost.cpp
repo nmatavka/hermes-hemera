@@ -21,6 +21,32 @@ std::filesystem::path SourceRoot() {
 #endif
 }
 
+std::string PreviewText(std::string_view body, std::size_t limit = 80) {
+    return std::string(body.substr(0, std::min<std::size_t>(body.size(), limit)));
+}
+
+AttachmentSummary BuildAttachmentSummary(const MessageAttachment& attachment) {
+    AttachmentSummary summary;
+    summary.name = attachment.name;
+    summary.content_type = attachment.content_type;
+    summary.size = attachment.size;
+    summary.omitted = attachment.omitted;
+    summary.download_complete = attachment.download_complete;
+    summary.fetch_error = attachment.fetch_error;
+    return summary;
+}
+
+AttachmentSummary BuildAttachmentSummary(const ComposeAttachment& attachment) {
+    AttachmentSummary summary;
+    summary.name = attachment.display_name.empty() ? attachment.source_path.filename().string()
+                                                   : attachment.display_name;
+    summary.content_type = attachment.mime_type;
+    summary.size = static_cast<std::size_t>(attachment.size);
+    summary.omitted = false;
+    summary.download_complete = true;
+    return summary;
+}
+
 class HermesApplication final : public BApplication {
 public:
     explicit HermesApplication(HaikuShellHost& shell_host)
@@ -321,6 +347,21 @@ const std::optional<ComposeMessage>& HaikuShellHost::PendingComposerMessage() co
     return pending_composer_message_;
 }
 
+std::optional<MessageDetail> HaikuShellHost::WorkspaceMessageDetail(std::string_view message_id) const {
+    return workspace_->GetMessageDetail(message_id);
+}
+
+std::vector<ImapActionRecord> HaikuShellHost::QueuedImapActions() const {
+    std::vector<ImapActionRecord> actions;
+    for (const auto& action : imap_action_store_->ListActions()) {
+        if (action.state == ImapActionState::kPending || action.state == ImapActionState::kFailed ||
+            action.state == ImapActionState::kCancelled) {
+            actions.push_back(action);
+        }
+    }
+    return actions;
+}
+
 void HaikuShellHost::ShowMainWindow() {
     if (!main_window_) {
         main_window_ = std::make_unique<HaikuMainWindow>(*this);
@@ -346,15 +387,35 @@ void HaikuShellHost::ReloadWorkspace() {
     for (const auto& mailbox : mailbox_store_->ListMailboxes()) {
         workspace_->AddMailbox({mailbox.id, mailbox.display_name, mailbox.message_count});
         for (const auto& message : message_store_->ListMessages(mailbox.id)) {
+            const std::string preview = PreviewText(message.plain_text_body);
             workspace_->AddMessage({
                 message.id,
                 mailbox.id,
                 message.subject,
                 message.sender,
-                message.plain_text_body.substr(0, std::min<std::size_t>(message.plain_text_body.size(), 80)),
+                preview,
                 message.unread,
                 message.attachments.size(),
             });
+            MessageDetail detail;
+            detail.id = message.id;
+            detail.mailbox_id = mailbox.id;
+            detail.subject = message.subject;
+            detail.sender = message.sender;
+            detail.recipients = message.recipients;
+            detail.preview = preview;
+            detail.plain_text_body = message.plain_text_body;
+            detail.unread = message.unread;
+            detail.download_complete = message.download_complete;
+            detail.attachments_omitted = message.attachments_omitted;
+            detail.flagged = message.flagged;
+            detail.deleted = message.deleted;
+            detail.answered = message.answered;
+            detail.last_error = message.last_error;
+            for (const auto& attachment : message.attachments) {
+                detail.attachments.push_back(BuildAttachmentSummary(attachment));
+            }
+            workspace_->AddMessageDetail(detail);
         }
     }
 
@@ -365,15 +426,31 @@ void HaikuShellHost::ReloadWorkspace() {
             {"drafts", "Drafts", {}, "", MailboxProtocol::kLocal, "", false, true, drafts.size()}, &ignored);
     }
     for (const auto& draft : drafts) {
+        const std::string preview = PreviewText(draft.body.plain_text);
         workspace_->AddMessage({
             draft.id,
             "drafts",
             draft.headers.subject.empty() ? "(No subject)" : draft.headers.subject,
             draft.headers.from_persona,
-            draft.body.plain_text.substr(0, std::min<std::size_t>(draft.body.plain_text.size(), 80)),
+            preview,
             false,
-            0,
+            draft.attachments.size(),
         });
+        MessageDetail detail;
+        detail.id = draft.id;
+        detail.mailbox_id = "drafts";
+        detail.subject = draft.headers.subject.empty() ? "(No subject)" : draft.headers.subject;
+        detail.sender = draft.headers.from_persona;
+        detail.recipients = draft.headers.to;
+        detail.preview = preview;
+        detail.plain_text_body = draft.body.plain_text;
+        detail.unread = false;
+        detail.download_complete = true;
+        detail.attachments_omitted = false;
+        for (const auto& attachment : draft.attachments) {
+            detail.attachments.push_back(BuildAttachmentSummary(attachment));
+        }
+        workspace_->AddMessageDetail(detail);
     }
 
     if (main_window_) {

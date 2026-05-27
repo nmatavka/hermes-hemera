@@ -10,6 +10,10 @@ void InMemoryWorkspaceModel::AddMessage(const MessageSummary& message) {
     messages_.push_back(message);
 }
 
+void InMemoryWorkspaceModel::AddMessageDetail(const MessageDetail& detail) {
+    message_details_.push_back(detail);
+}
+
 std::vector<MailboxSummary> InMemoryWorkspaceModel::Mailboxes() const {
     return mailboxes_;
 }
@@ -28,6 +32,15 @@ std::optional<MessageSummary> InMemoryWorkspaceModel::GetMessage(std::string_vie
     for (const auto& message : messages_) {
         if (message.id == message_id) {
             return message;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<MessageDetail> InMemoryWorkspaceModel::GetMessageDetail(std::string_view message_id) const {
+    for (const auto& detail : message_details_) {
+        if (detail.id == message_id) {
+            return detail;
         }
     }
     return std::nullopt;
