@@ -14,6 +14,9 @@ std::string GenerateQueuedMessageId() {
 
 MessageRecord BuildQueuedRecord(const ComposeMessage& message, std::string_view mailbox_id) {
     MessageRecord queued;
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
     queued.id = message.id.empty() ? GenerateQueuedMessageId() : message.id;
     queued.mailbox_id = std::string(mailbox_id);
     queued.subject = message.headers.subject;
@@ -33,6 +36,10 @@ MessageRecord BuildQueuedRecord(const ComposeMessage& message, std::string_view 
     }
     queued.plain_text_body = message.body.plain_text;
     queued.html_body = message.body.html_fragment;
+    queued.account_id = message.headers.from_persona.empty() ? "primary" : message.headers.from_persona;
+    queued.delivery_state = MessageDeliveryState::kQueued;
+    queued.created_at = static_cast<std::int64_t>(now);
+    queued.updated_at = queued.created_at;
     queued.unread = false;
     return queued;
 }
@@ -57,6 +64,7 @@ QueueComposeResult QueueComposeMessage(ComposeController& controller,
     MailboxRecord mailbox;
     mailbox.id = std::string(mailbox_id);
     mailbox.display_name = mailbox.id == "out" ? "Out" : mailbox.id;
+    mailbox.protocol = MailboxProtocol::kLocal;
     mailbox.system_mailbox = mailbox.id == "out";
     if (!mailbox_store.EnsureMailbox(mailbox, &result.error_message)) {
         return result;

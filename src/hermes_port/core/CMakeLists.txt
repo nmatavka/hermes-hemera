@@ -1,5 +1,6 @@
 add_library(
     hermes_port_core
+    src/CredentialStore.cpp
     src/ComposeController.cpp
     src/ComposeMessage.cpp
     src/ComposeQueue.cpp
@@ -15,11 +16,14 @@ add_library(
     src/HunspellSpellService.cpp
     src/InMemoryWorkspaceModel.cpp
     src/IniSettingsStore.cpp
+    src/MailTaskModel.cpp
+    src/MailTransportCoordinator.cpp
     src/MemoryAddressBookService.cpp
     src/MemoryRichTextSurface.cpp
     src/OpenSslTlsProvider.cpp
     src/RendererMode.cpp
     src/RuleBasedFilterEngine.cpp
+    src/SyncStateStore.cpp
     src/SimpleSearchService.cpp
     src/SocketTransportService.cpp
 )

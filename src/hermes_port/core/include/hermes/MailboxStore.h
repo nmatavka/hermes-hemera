@@ -8,10 +8,21 @@
 
 namespace hermes {
 
+enum class MailboxProtocol {
+    kLocal,
+    kPop,
+    kImap,
+    kSmtp,
+};
+
 struct MailboxRecord {
     std::string id;
     std::string display_name;
     std::filesystem::path path;
+    std::string account_id;
+    MailboxProtocol protocol = MailboxProtocol::kLocal;
+    std::string remote_name;
+    bool is_remote = false;
     bool system_mailbox = false;
     std::size_t message_count = 0;
 };

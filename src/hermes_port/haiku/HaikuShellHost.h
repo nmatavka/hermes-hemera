@@ -6,11 +6,18 @@
 #include <string>
 #include <vector>
 
+#include "hermes/AccountService.h"
+#include "hermes/CredentialStore.h"
 #include "hermes/DraftStore.h"
 #include "hermes/IniSettingsStore.h"
+#include "hermes/MailTaskModel.h"
+#include "hermes/MailTransportCoordinator.h"
 #include "hermes/MailboxStore.h"
 #include "hermes/MessageStore.h"
+#include "hermes/OpenSslTlsProvider.h"
 #include "hermes/PaigeRuntime.h"
+#include "hermes/SyncStateStore.h"
+#include "hermes/TransportService.h"
 #include "hermes/InMemoryWorkspaceModel.h"
 #include "hermes/SignatureStore.h"
 #include "hermes/ShellHost.h"
@@ -28,32 +35,49 @@ public:
     int Run() override;
     bool OpenMailbox(std::string_view mailbox_id) override;
     bool OpenComposer(const ComposeMessage& message) override;
+    bool SendQueued() override;
+    bool CheckMail() override;
+    bool SendAndReceive() override;
+    bool StopActiveTasks() override;
 
     InMemoryWorkspaceModel& Workspace();
+    LegacyAccountService& Accounts();
     IniSettingsStore& Settings();
+    FilesystemCredentialStore& Credentials();
+    FilesystemSyncStateStore& SyncState();
+    InMemoryMailTaskModel& Tasks();
     FilesystemDraftStore& Drafts();
     FilesystemMailboxStore& Mailboxes();
     FilesystemMessageStore& Messages();
     FilesystemStationeryStore& Stationery();
     FilesystemSignatureStore& Signatures();
     PaigeRuntime& Runtime();
+    MailTransportCoordinator& TransportCoordinator();
     const std::optional<ComposeMessage>& PendingComposerMessage() const;
 
     void ShowMainWindow();
     void ReloadWorkspace();
 
 private:
+    void LoadBootstrapAccounts();
     void ShowComposeWindow(const ComposeMessage& message);
     void EnsureWorkspaceDirectories();
     std::filesystem::path DataRoot() const;
 
     std::unique_ptr<IniSettingsStore> settings_;
     std::unique_ptr<InMemoryWorkspaceModel> workspace_;
+    std::unique_ptr<LegacyAccountService> account_service_;
+    std::unique_ptr<FilesystemCredentialStore> credential_store_;
+    std::unique_ptr<FilesystemSyncStateStore> sync_state_store_;
+    std::unique_ptr<InMemoryMailTaskModel> task_model_;
     std::unique_ptr<FilesystemDraftStore> draft_store_;
     std::unique_ptr<FilesystemMailboxStore> mailbox_store_;
     std::unique_ptr<FilesystemMessageStore> message_store_;
     std::unique_ptr<FilesystemStationeryStore> stationery_store_;
     std::unique_ptr<FilesystemSignatureStore> signature_store_;
+    std::unique_ptr<OpenSslTlsProvider> tls_provider_;
+    std::unique_ptr<SocketTransportService> transport_service_;
+    std::unique_ptr<MailTransportCoordinator> transport_coordinator_;
     std::unique_ptr<PaigeRuntime> paige_runtime_;
     std::unique_ptr<HaikuMainWindow> main_window_;
     std::vector<std::unique_ptr<HaikuComposeWindow>> compose_windows_;

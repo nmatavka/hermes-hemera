@@ -24,11 +24,14 @@ private:
     void PopulateWorkspace();
     void PopulateMessagesForCurrentMailbox();
     void PopulatePreview();
+    void PopulateTaskStatus();
 
     HaikuShellHost& shell_host_;
     BListView* mailbox_list_ = nullptr;
     BListView* message_list_ = nullptr;
     BTextView* preview_text_ = nullptr;
+    BListView* task_list_ = nullptr;
+    BTextView* task_errors_ = nullptr;
     std::vector<std::string> mailbox_ids_;
     std::vector<std::string> message_ids_;
     std::string current_mailbox_id_ = "inbox";

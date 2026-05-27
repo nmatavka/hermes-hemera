@@ -9,6 +9,7 @@ set(HERMES_THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/third_party" CACHE PATH "Locatio
 set(HERMES_PAIGE_ROOT "${HERMES_THIRD_PARTY_DIR}/Hermes-Paige" CACHE PATH "Location of the Hermes-Paige checkout.")
 set(HERMES_OPENSSL_ROOT "${HERMES_THIRD_PARTY_DIR}/openssl" CACHE PATH "Location of the OpenSSL 4.x checkout.")
 set(HERMES_HUNSPELL_ROOT "${HERMES_THIRD_PARTY_DIR}/hunspell" CACHE PATH "Location of the Hunspell checkout.")
+set(HERMES_KRB5_ROOT "${HERMES_THIRD_PARTY_DIR}/krb5" CACHE PATH "Location of the MIT Kerberos checkout.")
 
 set(HERMES_IS_HAIKU 0)
 if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
@@ -73,6 +74,23 @@ if(HUNSPELL_INCLUDE_DIR AND HUNSPELL_LIBRARY)
     )
 endif()
 
+set(HERMES_HAS_KRB5 0)
+find_path(
+    HERMES_KRB5_INCLUDE_DIR
+    NAMES krb5.h
+    HINTS
+        "${HERMES_KRB5_ROOT}/src/include"
+        "${HERMES_KRB5_ROOT}/include"
+)
+if(HERMES_KRB5_INCLUDE_DIR)
+    set(HERMES_HAS_KRB5 1)
+    target_include_directories(
+        hermes_port_dependencies
+        INTERFACE
+            "${HERMES_KRB5_INCLUDE_DIR}"
+    )
+endif()
+
 target_compile_definitions(
     hermes_port_dependencies
     INTERFACE
@@ -80,6 +98,7 @@ target_compile_definitions(
         HERMES_HAS_PAIGE=${HERMES_HAS_PAIGE}
         HERMES_HAS_OPENSSL=${HERMES_HAS_OPENSSL}
         HERMES_HAS_HUNSPELL=${HERMES_HAS_HUNSPELL}
+        HERMES_HAS_KRB5=${HERMES_HAS_KRB5}
 )
 
-message(STATUS "Hermes Haiku Port: HAIKU=${HERMES_IS_HAIKU} PAIGE=${HERMES_HAS_PAIGE} OPENSSL=${HERMES_HAS_OPENSSL} HUNSPELL=${HERMES_HAS_HUNSPELL}")
+message(STATUS "Hermes Haiku Port: HAIKU=${HERMES_IS_HAIKU} PAIGE=${HERMES_HAS_PAIGE} OPENSSL=${HERMES_HAS_OPENSSL} HUNSPELL=${HERMES_HAS_HUNSPELL} KRB5=${HERMES_HAS_KRB5}")

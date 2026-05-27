@@ -8,3 +8,6 @@
 [submodule "third_party/hunspell"]
 	path = third_party/hunspell
 	url = https://github.com/hunspell/hunspell
+[submodule "third_party/krb5"]
+	path = third_party/krb5
+	url = https://github.com/krb5/krb5.git

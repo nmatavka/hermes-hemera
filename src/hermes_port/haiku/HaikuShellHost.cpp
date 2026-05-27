@@ -39,15 +39,30 @@ private:
 HaikuShellHost::HaikuShellHost()
     : settings_(std::make_unique<IniSettingsStore>()),
       workspace_(std::make_unique<InMemoryWorkspaceModel>()),
+      account_service_(std::make_unique<LegacyAccountService>()),
+      credential_store_(std::make_unique<FilesystemCredentialStore>(DataRoot())),
+      sync_state_store_(std::make_unique<FilesystemSyncStateStore>(DataRoot())),
+      task_model_(std::make_unique<InMemoryMailTaskModel>()),
       draft_store_(std::make_unique<FilesystemDraftStore>(DataRoot() / "drafts")),
       mailbox_store_(std::make_unique<FilesystemMailboxStore>(DataRoot())),
       message_store_(std::make_unique<FilesystemMessageStore>(DataRoot())),
       stationery_store_(std::make_unique<FilesystemStationeryStore>()),
       signature_store_(std::make_unique<FilesystemSignatureStore>()),
+      tls_provider_(std::make_unique<OpenSslTlsProvider>()),
+      transport_service_(std::make_unique<SocketTransportService>(tls_provider_.get())),
+      transport_coordinator_(std::make_unique<MailTransportCoordinator>(*account_service_,
+                                                                        *credential_store_,
+                                                                        *sync_state_store_,
+                                                                        *mailbox_store_,
+                                                                        *message_store_,
+                                                                        *transport_service_,
+                                                                        *tls_provider_,
+                                                                        *task_model_)),
       paige_runtime_(std::make_unique<PaigeRuntime>()) {
     std::string ignored;
     (void)paige_runtime_->Initialize(&ignored);
     EnsureWorkspaceDirectories();
+    LoadBootstrapAccounts();
     ReloadWorkspace();
 }
 
@@ -72,12 +87,50 @@ bool HaikuShellHost::OpenComposer(const ComposeMessage& message) {
     return true;
 }
 
+bool HaikuShellHost::SendQueued() {
+    const auto summary = transport_coordinator_->SendQueued();
+    ReloadWorkspace();
+    return summary.success;
+}
+
+bool HaikuShellHost::CheckMail() {
+    const auto summary = transport_coordinator_->CheckMail();
+    ReloadWorkspace();
+    return summary.success;
+}
+
+bool HaikuShellHost::SendAndReceive() {
+    const auto summary = transport_coordinator_->SendAndReceive();
+    ReloadWorkspace();
+    return summary.success;
+}
+
+bool HaikuShellHost::StopActiveTasks() {
+    return false;
+}
+
 InMemoryWorkspaceModel& HaikuShellHost::Workspace() {
     return *workspace_;
 }
 
+LegacyAccountService& HaikuShellHost::Accounts() {
+    return *account_service_;
+}
+
 IniSettingsStore& HaikuShellHost::Settings() {
     return *settings_;
+}
+
+FilesystemCredentialStore& HaikuShellHost::Credentials() {
+    return *credential_store_;
+}
+
+FilesystemSyncStateStore& HaikuShellHost::SyncState() {
+    return *sync_state_store_;
+}
+
+InMemoryMailTaskModel& HaikuShellHost::Tasks() {
+    return *task_model_;
 }
 
 FilesystemDraftStore& HaikuShellHost::Drafts() {
@@ -102,6 +155,10 @@ FilesystemSignatureStore& HaikuShellHost::Signatures() {
 
 PaigeRuntime& HaikuShellHost::Runtime() {
     return *paige_runtime_;
+}
+
+MailTransportCoordinator& HaikuShellHost::TransportCoordinator() {
+    return *transport_coordinator_;
 }
 
 const std::optional<ComposeMessage>& HaikuShellHost::PendingComposerMessage() const {
@@ -140,6 +197,7 @@ void HaikuShellHost::ReloadWorkspace() {
                 message.sender,
                 message.plain_text_body.substr(0, std::min<std::size_t>(message.plain_text_body.size(), 80)),
                 message.unread,
+                message.attachments.size(),
             });
         }
     }
@@ -147,7 +205,8 @@ void HaikuShellHost::ReloadWorkspace() {
     const auto drafts = draft_store_->ListDrafts();
     if (!drafts.empty() && !mailbox_store_->GetMailbox("drafts")) {
         std::string ignored;
-        mailbox_store_->EnsureMailbox({"drafts", "Drafts", {}, true, drafts.size()}, &ignored);
+        mailbox_store_->EnsureMailbox(
+            {"drafts", "Drafts", {}, "", MailboxProtocol::kLocal, "", false, true, drafts.size()}, &ignored);
     }
     for (const auto& draft : drafts) {
         workspace_->AddMessage({
@@ -157,6 +216,7 @@ void HaikuShellHost::ReloadWorkspace() {
             draft.headers.from_persona,
             draft.body.plain_text.substr(0, std::min<std::size_t>(draft.body.plain_text.size(), 80)),
             false,
+            0,
         });
     }
 
@@ -171,14 +231,23 @@ void HaikuShellHost::EnsureWorkspaceDirectories() {
     std::filesystem::create_directories(DataRoot() / "drafts", ignored);
 
     std::string error_message;
-    mailbox_store_->EnsureMailbox({"inbox", "Inbox", {}, true, 0}, &error_message);
-    mailbox_store_->EnsureMailbox({"out", "Out", {}, true, 0}, &error_message);
-    mailbox_store_->EnsureMailbox({"drafts", "Drafts", {}, true, 0}, &error_message);
+    mailbox_store_->EnsureMailbox({"inbox", "Inbox", {}, "", MailboxProtocol::kLocal, "", false, true, 0},
+                                  &error_message);
+    mailbox_store_->EnsureMailbox({"out", "Out", {}, "", MailboxProtocol::kLocal, "", false, true, 0},
+                                  &error_message);
+    mailbox_store_->EnsureMailbox({"drafts", "Drafts", {}, "", MailboxProtocol::kLocal, "", false, true, 0},
+                                  &error_message);
 
     const auto stationery_root = SourceRoot() / "tests" / "fixtures" / "legacy" / "compose" / "stationery";
     const auto signature_root = SourceRoot() / "tests" / "fixtures" / "legacy" / "compose" / "signatures";
     stationery_store_->Discover(stationery_root, nullptr);
     signature_store_->Discover(signature_root, nullptr);
+}
+
+void HaikuShellHost::LoadBootstrapAccounts() {
+    const auto profile = SourceRoot() / "tests" / "fixtures" / "legacy" / "profile_snapshots" / "Eudora.box";
+    std::string ignored;
+    account_service_->LoadFromIniFile(profile, &ignored);
 }
 
 std::filesystem::path HaikuShellHost::DataRoot() const {

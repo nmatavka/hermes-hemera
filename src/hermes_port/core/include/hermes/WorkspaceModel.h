@@ -20,6 +20,7 @@ struct MessageSummary {
     std::string sender;
     std::string preview;
     bool unread = true;
+    std::size_t attachment_count = 0;
 };
 
 class WorkspaceModel {

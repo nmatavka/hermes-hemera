@@ -6,10 +6,25 @@
 
 HERMES_TEST(SimpleSearchServiceRanksSubjectHitsAboveBodyHits) {
     hermes::SimpleSearchService search;
-    std::vector<hermes::MessageRecord> messages = {
-        {"1", "inbox", "Release checklist", "alice@example.com", "team@example.com", "No blockers", "", true},
-        {"2", "inbox", "Status", "bob@example.com", "team@example.com", "release release release", "", true},
-    };
+    hermes::MessageRecord first;
+    first.id = "1";
+    first.mailbox_id = "inbox";
+    first.subject = "Release checklist";
+    first.sender = "alice@example.com";
+    first.recipients = "team@example.com";
+    first.plain_text_body = "No blockers";
+    first.unread = true;
+
+    hermes::MessageRecord second;
+    second.id = "2";
+    second.mailbox_id = "inbox";
+    second.subject = "Status";
+    second.sender = "bob@example.com";
+    second.recipients = "team@example.com";
+    second.plain_text_body = "release release release";
+    second.unread = true;
+
+    std::vector<hermes::MessageRecord> messages = {first, second};
 
     const auto hits = search.Search(messages, {"release", false, true, true, true});
     HERMES_CHECK_EQ(hits.size(), static_cast<std::size_t>(2));

@@ -25,6 +25,10 @@ namespace {
 constexpr uint32_t kNewComposeMessage = 'ncmp';
 constexpr uint32_t kMailboxSelectedMessage = 'mbox';
 constexpr uint32_t kMessageSelectedMessage = 'mmsg';
+constexpr uint32_t kSendQueuedMessage = 'sndq';
+constexpr uint32_t kCheckMailMessage = 'ckml';
+constexpr uint32_t kSendReceiveMessage = 'sdrx';
+constexpr uint32_t kStopTasksMessage = 'stpt';
 
 hermes::ComposeMessage BuildDefaultComposeMessage(HaikuShellHost& shell_host) {
     hermes::ComposeMessage message;
@@ -52,12 +56,22 @@ HaikuMainWindow::HaikuMainWindow(HaikuShellHost& shell_host)
     file_menu->AddItem(new BMenuItem("Quit", new BMessage(B_QUIT_REQUESTED)));
     menu_bar->AddItem(file_menu);
 
+    auto* mail_menu = new BMenu("Mail");
+    mail_menu->AddItem(new BMenuItem("Check Mail", new BMessage(kCheckMailMessage)));
+    mail_menu->AddItem(new BMenuItem("Send Queued", new BMessage(kSendQueuedMessage)));
+    mail_menu->AddItem(new BMenuItem("Send & Receive", new BMessage(kSendReceiveMessage)));
+    mail_menu->AddItem(new BMenuItem("Stop Tasks", new BMessage(kStopTasksMessage)));
+    menu_bar->AddItem(mail_menu);
+
     mailbox_list_ = new BListView("mailboxes");
     mailbox_list_->SetSelectionMessage(new BMessage(kMailboxSelectedMessage));
     message_list_ = new BListView("messages");
     message_list_->SetSelectionMessage(new BMessage(kMessageSelectedMessage));
     preview_text_ = new BTextView("preview");
     preview_text_->MakeEditable(false);
+    task_list_ = new BListView("tasks");
+    task_errors_ = new BTextView("task-errors");
+    task_errors_->MakeEditable(false);
 
     auto* top_split = new BSplitView(B_HORIZONTAL);
     top_split->AddChild(new BScrollView("mailboxes-scroll", mailbox_list_, 0, false, true));
@@ -66,12 +80,15 @@ HaikuMainWindow::HaikuMainWindow(HaikuShellHost& shell_host)
     auto* main_split = new BSplitView(B_VERTICAL);
     main_split->AddChild(top_split);
     main_split->AddChild(new BScrollView("preview-scroll", preview_text_, 0, true, true));
+    main_split->AddChild(new BScrollView("tasks-scroll", task_list_, 0, false, true));
+    main_split->AddChild(new BScrollView("task-errors-scroll", task_errors_, 0, true, true));
 
     BLayoutBuilder::Group<>(this, B_VERTICAL, 0)
         .Add(menu_bar)
         .Add(main_split);
 
     PopulateWorkspace();
+    PopulateTaskStatus();
 }
 
 void HaikuMainWindow::MessageReceived(BMessage* message) {
@@ -91,6 +108,26 @@ void HaikuMainWindow::MessageReceived(BMessage* message) {
 
         case kMessageSelectedMessage:
             PopulatePreview();
+            return;
+
+        case kSendQueuedMessage:
+            shell_host_.SendQueued();
+            PopulateTaskStatus();
+            return;
+
+        case kCheckMailMessage:
+            shell_host_.CheckMail();
+            PopulateTaskStatus();
+            return;
+
+        case kSendReceiveMessage:
+            shell_host_.SendAndReceive();
+            PopulateTaskStatus();
+            return;
+
+        case kStopTasksMessage:
+            shell_host_.StopActiveTasks();
+            PopulateTaskStatus();
             return;
 
         default:
@@ -185,12 +222,37 @@ void HaikuMainWindow::PopulatePreview() {
 
     const std::string preview =
         "Mailbox: " + summary->mailbox_id + "\nSubject: " + summary->subject + "\nFrom: " +
-        summary->sender + "\n\n" + summary->preview;
+        summary->sender + "\nAttachments: " + std::to_string(summary->attachment_count) + "\n\n" +
+        summary->preview;
     preview_text_->SetText(preview.c_str());
 }
 
 void HaikuMainWindow::RefreshWorkspace() {
     PopulateWorkspace();
+    PopulateTaskStatus();
+}
+
+void HaikuMainWindow::PopulateTaskStatus() {
+    task_list_->MakeEmpty();
+    task_errors_->SetText("");
+
+    for (const auto& task : shell_host_.Tasks().Tasks()) {
+        const std::string row = task.title + " | " + task.persona + " | " + task.status + " | " + task.details +
+                                " | " + std::to_string(task.so_far) + "/" + std::to_string(task.total);
+        task_list_->AddItem(new BStringItem(row.c_str()));
+    }
+
+    std::string errors;
+    for (const auto& error : shell_host_.Tasks().Errors()) {
+        if (!errors.empty()) {
+            errors += "\n\n";
+        }
+        errors += error.task_id + ": " + error.message;
+    }
+    if (errors.empty()) {
+        errors = "No task errors.";
+    }
+    task_errors_->SetText(errors.c_str());
 }
 
 }  // namespace hermes::haiku_port

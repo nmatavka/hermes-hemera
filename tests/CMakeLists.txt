@@ -30,6 +30,7 @@ add_executable(
     RendererModeTests.cpp
     IniSettingsStoreTests.cpp
     MailStoreTests.cpp
+    MailTransportCoordinatorTests.cpp
     MoodWatchAnalyzerTests.cpp
     NicknameAndAddressBookTests.cpp
     PluginHostTests.cpp

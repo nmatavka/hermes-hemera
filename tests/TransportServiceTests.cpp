@@ -1,5 +1,6 @@
 #include "TestRegistry.h"
 
+#include "hermes/OpenSslTlsProvider.h"
 #include "hermes/TransportService.h"
 
 #if !defined(_WIN32)
@@ -14,16 +15,24 @@
 HERMES_TEST(SocketTransportServiceAdvertisesOnlyPlaintextSupport) {
     hermes::SocketTransportService service;
     HERMES_CHECK(service.Supports(hermes::TransportSecurity::kPlaintext));
-    HERMES_CHECK(!service.Supports(hermes::TransportSecurity::kTls));
+    HERMES_CHECK(!service.Supports(hermes::TransportSecurity::kImplicitTls));
 }
 
-HERMES_TEST(SocketTransportServiceRejectsTlsUntilTlsAdapterIsWired) {
+HERMES_TEST(SocketTransportServiceRejectsImplicitTlsWithoutTlsProvider) {
     hermes::SocketTransportService service;
     std::string error_message;
     const auto connection =
-        service.Connect({"localhost", 443, hermes::TransportSecurity::kTls, 1000}, &error_message);
+        service.Connect({"localhost", 443, hermes::TransportSecurity::kImplicitTls, 1000}, &error_message);
     HERMES_CHECK(!connection);
     HERMES_CHECK(!error_message.empty());
+}
+
+HERMES_TEST(SocketTransportServiceAdvertisesTlsWhenOpenSslIsAvailable) {
+    hermes::OpenSslTlsProvider provider;
+    hermes::SocketTransportService service(&provider);
+    HERMES_CHECK(service.Supports(hermes::TransportSecurity::kPlaintext));
+    HERMES_CHECK_EQ(service.Supports(hermes::TransportSecurity::kImplicitTls), provider.IsAvailable());
+    HERMES_CHECK_EQ(service.Supports(hermes::TransportSecurity::kStartTls), provider.IsAvailable());
 }
 
 #if !defined(_WIN32)
@@ -60,7 +69,8 @@ HERMES_TEST(SocketTransportServiceConnectsToLocalPlaintextServer) {
         service.Connect({"127.0.0.1", port, hermes::TransportSecurity::kPlaintext, 2000}, &error_message);
     HERMES_CHECK(static_cast<bool>(connection));
     HERMES_CHECK(connection->Send("NOOP\r\n", &error_message));
-    const std::string received = connection->Receive(128, &error_message);
+    std::string received;
+    HERMES_CHECK(connection->ReceiveLine(&received, &error_message));
     HERMES_CHECK(received.find("+OK Hermes test server") != std::string::npos);
     connection->Close();
 

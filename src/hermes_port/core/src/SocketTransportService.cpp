@@ -35,10 +35,10 @@ public:
         const char* buffer = data.data();
         std::size_t remaining = data.size();
         while (remaining != 0) {
-            const ssize_t sent = ::send(socket_fd_, buffer, remaining, 0);
+            const auto sent = SendRaw(buffer, remaining, error_message);
             if (sent <= 0) {
-                if (error_message) {
-                    *error_message = sent == 0 ? "Socket closed while sending data." : std::strerror(errno);
+                if (error_message && error_message->empty()) {
+                    *error_message = "Socket closed while sending data.";
                 }
                 return false;
             }
@@ -56,21 +56,105 @@ public:
         }
         return {};
 #else
-        std::string buffer(max_bytes, '\0');
-        const ssize_t received = ::recv(socket_fd_, buffer.data(), buffer.size(), 0);
-        if (received < 0) {
-            if (error_message) {
-                *error_message = std::strerror(errno);
-            }
-            return {};
+        std::string output;
+        if (!buffered_data_.empty()) {
+            const std::size_t take = std::min(max_bytes, buffered_data_.size());
+            output = buffered_data_.substr(0, take);
+            buffered_data_.erase(0, take);
+            return output;
         }
-        buffer.resize(static_cast<std::size_t>(received));
-        return buffer;
+
+        output.resize(max_bytes);
+        const auto received = ReceiveRaw(output.data(), output.size(), error_message);
+        if (received <= 0) {
+            output.clear();
+            return output;
+        }
+        output.resize(static_cast<std::size_t>(received));
+        return output;
 #endif
+    }
+
+    bool ReceiveLine(std::string* line, std::string* error_message) override {
+#if defined(_WIN32)
+        if (error_message) {
+            *error_message = "Socket transport is only implemented for POSIX platforms.";
+        }
+        return false;
+#else
+        if (!line) {
+            if (error_message) {
+                *error_message = "ReceiveLine requires an output buffer.";
+            }
+            return false;
+        }
+
+        for (;;) {
+            const std::size_t newline = buffered_data_.find('\n');
+            if (newline != std::string::npos) {
+                *line = buffered_data_.substr(0, newline);
+                if (!line->empty() && line->back() == '\r') {
+                    line->pop_back();
+                }
+                buffered_data_.erase(0, newline + 1);
+                return true;
+            }
+
+            char scratch[1024];
+            const auto received = ReceiveRaw(scratch, sizeof(scratch), error_message);
+            if (received <= 0) {
+                if (error_message && error_message->empty()) {
+                    *error_message = "Socket closed while receiving a line.";
+                }
+                return false;
+            }
+            buffered_data_.append(scratch, static_cast<std::size_t>(received));
+        }
+#endif
+    }
+
+    bool UpgradeToTls(const TlsProvider& provider,
+                      std::string_view hostname,
+                      std::string* error_message) override {
+#if defined(_WIN32)
+        if (error_message) {
+            *error_message = "Socket transport is only implemented for POSIX platforms.";
+        }
+        return false;
+#else
+        if (tls_session_) {
+            return true;
+        }
+        auto session = provider.CreateClientSession(error_message);
+        if (!session) {
+            return false;
+        }
+        if (!session->Handshake(socket_fd_, hostname, error_message)) {
+            return false;
+        }
+        const TlsPeerInfo peer = session->PeerInfo();
+        tls_status_.secure = peer.secure;
+        tls_status_.peer_verified = peer.peer_verified;
+        tls_status_.hostname_verified = peer.hostname_verified;
+        tls_status_.protocol = peer.protocol;
+        tls_status_.cipher = peer.cipher;
+        tls_status_.peer_subject = peer.peer_subject;
+        tls_session_ = std::move(session);
+        return true;
+#endif
+    }
+
+    bool IsSecure() const override {
+        return tls_session_ && tls_status_.secure;
+    }
+
+    TransportTlsStatus TlsStatus() const override {
+        return tls_status_;
     }
 
     void Close() override {
 #if !defined(_WIN32)
+        tls_session_.reset();
         if (socket_fd_ >= 0) {
             ::close(socket_fd_);
             socket_fd_ = -1;
@@ -79,7 +163,34 @@ public:
     }
 
 private:
+#if !defined(_WIN32)
+    std::ptrdiff_t SendRaw(const void* data, std::size_t size, std::string* error_message) {
+        if (tls_session_) {
+            return tls_session_->Send(data, size, error_message);
+        }
+        const ssize_t sent = ::send(socket_fd_, data, size, 0);
+        if (sent < 0 && error_message) {
+            *error_message = std::strerror(errno);
+        }
+        return sent;
+    }
+
+    std::ptrdiff_t ReceiveRaw(void* data, std::size_t size, std::string* error_message) {
+        if (tls_session_) {
+            return tls_session_->Receive(data, size, error_message);
+        }
+        const ssize_t received = ::recv(socket_fd_, data, size, 0);
+        if (received < 0 && error_message) {
+            *error_message = std::strerror(errno);
+        }
+        return received;
+    }
+#endif
+
     int socket_fd_ = -1;
+    std::string buffered_data_;
+    std::unique_ptr<TlsClientSession> tls_session_;
+    TransportTlsStatus tls_status_;
 };
 
 #if !defined(_WIN32)
@@ -98,22 +209,24 @@ bool ApplySocketTimeout(int socket_fd, int timeout_ms) {
 
 }  // namespace
 
+SocketTransportService::SocketTransportService(const TlsProvider* tls_provider) : tls_provider_(tls_provider) {}
+
 std::unique_ptr<TransportConnection> SocketTransportService::Connect(const TransportEndpoint& endpoint,
                                                                      std::string* error_message) {
-    if (endpoint.security == TransportSecurity::kTls) {
-        if (error_message) {
-            *error_message =
-                "TLS transport is not yet wired through the socket transport adapter. Use TlsProvider separately.";
-        }
-        return nullptr;
-    }
-
 #if defined(_WIN32)
     if (error_message) {
         *error_message = "Socket transport is only implemented for POSIX platforms.";
     }
     return nullptr;
 #else
+    if ((endpoint.security == TransportSecurity::kImplicitTls || endpoint.security == TransportSecurity::kStartTls) &&
+        (!tls_provider_ || !tls_provider_->IsAvailable())) {
+        if (error_message) {
+            *error_message = "TLS support is unavailable for this transport service.";
+        }
+        return nullptr;
+    }
+
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -137,7 +250,13 @@ std::unique_ptr<TransportConnection> SocketTransportService::Connect(const Trans
 
         ApplySocketTimeout(socket_fd, endpoint.connect_timeout_ms);
         if (::connect(socket_fd, candidate->ai_addr, candidate->ai_addrlen) == 0) {
-            connection = std::make_unique<SocketTransportConnection>(socket_fd);
+            auto socket_connection = std::make_unique<SocketTransportConnection>(socket_fd);
+            if (endpoint.security == TransportSecurity::kImplicitTls &&
+                !socket_connection->UpgradeToTls(*tls_provider_, endpoint.host, error_message)) {
+                socket_connection->Close();
+                continue;
+            }
+            connection = std::move(socket_connection);
             break;
         }
 
@@ -153,7 +272,10 @@ std::unique_ptr<TransportConnection> SocketTransportService::Connect(const Trans
 }
 
 bool SocketTransportService::Supports(TransportSecurity security) const {
-    return security == TransportSecurity::kPlaintext;
+    if (security == TransportSecurity::kPlaintext) {
+        return true;
+    }
+    return tls_provider_ && tls_provider_->IsAvailable();
 }
 
 }  // namespace hermes

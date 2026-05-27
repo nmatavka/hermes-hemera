@@ -1,6 +1,7 @@
 #include "hermes/MailboxStore.h"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 
 #include "hermes/IniSettingsStore.h"
@@ -30,6 +31,36 @@ std::size_t CountMessages(const std::filesystem::path& mailbox_directory) {
     return count;
 }
 
+std::string ProtocolToString(MailboxProtocol protocol) {
+    switch (protocol) {
+        case MailboxProtocol::kLocal:
+            return "local";
+        case MailboxProtocol::kPop:
+            return "pop";
+        case MailboxProtocol::kImap:
+            return "imap";
+        case MailboxProtocol::kSmtp:
+            return "smtp";
+    }
+    return "local";
+}
+
+MailboxProtocol ProtocolFromString(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (value == "pop") {
+        return MailboxProtocol::kPop;
+    }
+    if (value == "imap") {
+        return MailboxProtocol::kImap;
+    }
+    if (value == "smtp") {
+        return MailboxProtocol::kSmtp;
+    }
+    return MailboxProtocol::kLocal;
+}
+
 }  // namespace
 
 bool FilesystemMailboxStore::EnsureMailbox(const MailboxRecord& mailbox, std::string* error_message) {
@@ -54,6 +85,10 @@ bool FilesystemMailboxStore::EnsureMailbox(const MailboxRecord& mailbox, std::st
     metadata.SetString("Mailbox", "Id", mailbox.id);
     metadata.SetString("Mailbox", "DisplayName",
                        mailbox.display_name.empty() ? mailbox.id : mailbox.display_name);
+    metadata.SetString("Mailbox", "AccountId", mailbox.account_id);
+    metadata.SetString("Mailbox", "Protocol", ProtocolToString(mailbox.protocol));
+    metadata.SetString("Mailbox", "RemoteName", mailbox.remote_name);
+    metadata.SetString("Mailbox", "IsRemote", mailbox.is_remote ? "1" : "0");
     metadata.SetString("Mailbox", "SystemMailbox", mailbox.system_mailbox ? "1" : "0");
     return metadata.SaveToFile(MetadataPath(mailbox_directory), error_message);
 }
@@ -83,6 +118,10 @@ std::vector<MailboxRecord> FilesystemMailboxStore::ListMailboxes() const {
         record.display_name =
             metadata.GetString("Mailbox", "DisplayName").value_or(record.id);
         record.path = mailbox_directory;
+        record.account_id = metadata.GetString("Mailbox", "AccountId").value_or("");
+        record.protocol = ProtocolFromString(metadata.GetString("Mailbox", "Protocol").value_or("local"));
+        record.remote_name = metadata.GetString("Mailbox", "RemoteName").value_or("");
+        record.is_remote = metadata.GetBool("Mailbox", "IsRemote", false);
         record.system_mailbox = metadata.GetBool("Mailbox", "SystemMailbox", false);
         record.message_count = CountMessages(mailbox_directory);
         mailboxes.push_back(std::move(record));

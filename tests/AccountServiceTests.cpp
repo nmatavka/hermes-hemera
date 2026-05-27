@@ -20,8 +20,15 @@ HERMES_TEST(LegacyAccountServiceLoadsTrackedProfileSnapshot) {
     HERMES_CHECK_EQ(account.login_name, std::string("jmiller"));
     HERMES_CHECK_EQ(account.incoming_server, std::string("swamp.qualcomm.com"));
     HERMES_CHECK_EQ(account.outgoing_server, std::string("swamp.qualcomm.com"));
+    HERMES_CHECK_EQ(account.incoming_port, static_cast<std::uint16_t>(110));
+    HERMES_CHECK_EQ(account.outgoing_port, static_cast<std::uint16_t>(25));
     HERMES_CHECK(account.uses_pop);
     HERMES_CHECK(!account.uses_imap);
+    HERMES_CHECK_EQ(account.pop_auth, hermes::PopAuthMode::kPassword);
+    HERMES_CHECK_EQ(account.smtp_auth, hermes::SmtpAuthMode::kNone);
+    HERMES_CHECK(account.check_mail_by_default);
+    HERMES_CHECK_EQ(account.big_message_threshold, static_cast<std::size_t>(40960));
+    HERMES_CHECK_EQ(account.trash_mailbox_name, std::string("Trash"));
 }
 
 HERMES_TEST(LegacyAccountServiceCanLoadMultipleAccountSections) {
@@ -33,9 +40,13 @@ HERMES_TEST(LegacyAccountServiceCanLoadMultipleAccountSections) {
     settings.SetString("Persona-Work", "RealName", "Work");
     settings.SetString("Persona-Work", "ReturnAddress", "work@example.com");
     settings.SetString("Persona-Work", "LoginName", "work");
-    settings.SetString("Persona-Work", "PopServer", "imap.example.com");
+    settings.SetString("Persona-Work", "ImapServer", "imap.example.com");
     settings.SetString("Persona-Work", "SMTPServer", "smtp.work.example.com");
     settings.SetString("Persona-Work", "UsesIMAP", "1");
+    settings.SetString("Persona-Work", "IMAPPort", "993");
+    settings.SetString("Persona-Work", "IMAPSSLUse", "1");
+    settings.SetString("Persona-Work", "AuthenticateCRAMMD5", "1");
+    settings.SetString("Persona-Work", "SmtpAuthAllowed", "1");
 
     hermes::LegacyAccountService service;
     HERMES_CHECK(service.LoadFromSettings(settings));
@@ -45,4 +56,9 @@ HERMES_TEST(LegacyAccountServiceCanLoadMultipleAccountSections) {
     HERMES_CHECK(static_cast<bool>(work));
     HERMES_CHECK_EQ(work->email_address, std::string("work@example.com"));
     HERMES_CHECK(work->uses_imap);
+    HERMES_CHECK_EQ(work->incoming_server, std::string("imap.example.com"));
+    HERMES_CHECK_EQ(work->incoming_port, static_cast<std::uint16_t>(993));
+    HERMES_CHECK_EQ(work->incoming_security, hermes::TransportSecurityMode::kImplicitTls);
+    HERMES_CHECK_EQ(work->imap_auth, hermes::ImapAuthMode::kCramMd5);
+    HERMES_CHECK_EQ(work->smtp_auth, hermes::SmtpAuthMode::kPlain);
 }
