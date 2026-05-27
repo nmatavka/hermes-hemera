@@ -12,6 +12,14 @@ namespace hermes::haiku_port {
 
 namespace {
 
+std::filesystem::path SourceRoot() {
+#ifdef HERMES_SOURCE_ROOT
+    return std::filesystem::path(HERMES_SOURCE_ROOT);
+#else
+    return std::filesystem::current_path();
+#endif
+}
+
 class HermesApplication final : public BApplication {
 public:
     explicit HermesApplication(HaikuShellHost& shell_host)
@@ -112,7 +120,7 @@ void HaikuShellHost::ShowMainWindow() {
 }
 
 void HaikuShellHost::ShowComposeWindow(const ComposeMessage& message) {
-    auto compose_window = std::make_unique<HaikuComposeWindow>(message);
+    auto compose_window = std::make_unique<HaikuComposeWindow>(*this, message);
     compose_window->Show();
     compose_windows_.push_back(std::move(compose_window));
 }
@@ -149,6 +157,10 @@ void HaikuShellHost::ReloadWorkspace() {
             false,
         });
     }
+
+    if (main_window_) {
+        main_window_->RefreshWorkspace();
+    }
 }
 
 void HaikuShellHost::EnsureWorkspaceDirectories() {
@@ -161,10 +173,8 @@ void HaikuShellHost::EnsureWorkspaceDirectories() {
     mailbox_store_->EnsureMailbox({"out", "Out", {}, true, 0}, &error_message);
     mailbox_store_->EnsureMailbox({"drafts", "Drafts", {}, true, 0}, &error_message);
 
-    const auto stationery_root = std::filesystem::current_path() / "tests" / "fixtures" / "legacy" / "compose" /
-                                 "stationery";
-    const auto signature_root = std::filesystem::current_path() / "tests" / "fixtures" / "legacy" / "compose" /
-                                "signatures";
+    const auto stationery_root = SourceRoot() / "tests" / "fixtures" / "legacy" / "compose" / "stationery";
+    const auto signature_root = SourceRoot() / "tests" / "fixtures" / "legacy" / "compose" / "signatures";
     stationery_store_->Discover(stationery_root, nullptr);
     signature_store_->Discover(signature_root, nullptr);
 }

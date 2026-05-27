@@ -2,6 +2,7 @@
 
 #include "hermes/BufferedMessageRenderer.h"
 #include "hermes/MemoryRichTextSurface.h"
+#include "hermes/PaigeRichTextSurface.h"
 #include "hermes/RendererMode.h"
 
 HERMES_TEST(RendererModeRoundTrip) {
@@ -36,4 +37,42 @@ HERMES_TEST(MemoryRichTextSurfaceUndoRedo) {
     HERMES_CHECK_EQ(surface.Snapshot().plain_text, std::string("hello world"));
     HERMES_CHECK(surface.Redo());
     HERMES_CHECK_EQ(surface.Snapshot().plain_text, std::string("hello haiku"));
+}
+
+HERMES_TEST(PaigeRichTextSurfaceProvidesFallbackEditingWhenNativeRuntimeIsUnavailable) {
+    hermes::PaigeRuntime runtime;
+    hermes::PaigeRichTextSurface surface(runtime);
+    HERMES_CHECK(surface.Load({"hello world", "<p>hello world</p>", false}));
+    HERMES_CHECK(surface.SetSelection({6, 5}));
+    HERMES_CHECK(surface.ReplaceSelection("haiku"));
+    HERMES_CHECK_EQ(surface.Snapshot().plain_text, std::string("hello haiku"));
+    HERMES_CHECK(surface.Undo());
+    HERMES_CHECK_EQ(surface.Snapshot().plain_text, std::string("hello world"));
+    HERMES_CHECK(surface.Redo());
+    HERMES_CHECK_EQ(surface.Snapshot().plain_text, std::string("hello haiku"));
+    HERMES_CHECK(!surface.IsAvailable());
+}
+
+HERMES_TEST(PaigeRichTextSurfaceSupportsClipboardAndDiagnosticsFallback) {
+    hermes::PaigeRuntime runtime;
+    hermes::PaigeRichTextSurface surface(runtime);
+    HERMES_CHECK(surface.Load({"hello world", "<div>hello world</div>", false}));
+    HERMES_CHECK(surface.SetSelection({0, 5}));
+    HERMES_CHECK_EQ(surface.CopySelection(), std::string("hello"));
+    HERMES_CHECK_EQ(surface.CutSelection(), std::string("hello"));
+    HERMES_CHECK_EQ(surface.Snapshot().plain_text, std::string(" world"));
+    HERMES_CHECK(surface.SetSelection({0, 0}));
+    HERMES_CHECK(surface.Paste());
+    HERMES_CHECK_EQ(surface.Snapshot().plain_text, std::string("hello world"));
+
+    surface.SetDiagnostics({{
+        hermes::TextDiagnosticKind::kSpell,
+        hermes::TextDiagnosticSeverity::kWarning,
+        6,
+        5,
+        "Possible misspelling",
+    }});
+    HERMES_CHECK_EQ(surface.Diagnostics().size(), static_cast<std::size_t>(1));
+    surface.ClearDiagnostics();
+    HERMES_CHECK(surface.Diagnostics().empty());
 }

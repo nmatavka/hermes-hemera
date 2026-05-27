@@ -1,5 +1,7 @@
 #include "HaikuMainWindow.h"
 
+#include <chrono>
+
 #include <Application.h>
 #include <LayoutBuilder.h>
 #include <ListItem.h>
@@ -21,10 +23,14 @@ namespace hermes::haiku_port {
 namespace {
 
 constexpr uint32_t kNewComposeMessage = 'ncmp';
+constexpr uint32_t kMailboxSelectedMessage = 'mbox';
+constexpr uint32_t kMessageSelectedMessage = 'mmsg';
 
 hermes::ComposeMessage BuildDefaultComposeMessage(HaikuShellHost& shell_host) {
     hermes::ComposeMessage message;
-    message.id = "compose-draft";
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
+    message.id = "compose-" + std::to_string(static_cast<long long>(micros));
     message.policy = hermes::ComposePolicyFromSettings(shell_host.Settings());
     message.signature_name = message.policy.default_signature_name;
     message.stationery_name = message.policy.default_stationery_name;
@@ -47,7 +53,9 @@ HaikuMainWindow::HaikuMainWindow(HaikuShellHost& shell_host)
     menu_bar->AddItem(file_menu);
 
     mailbox_list_ = new BListView("mailboxes");
+    mailbox_list_->SetSelectionMessage(new BMessage(kMailboxSelectedMessage));
     message_list_ = new BListView("messages");
+    message_list_->SetSelectionMessage(new BMessage(kMessageSelectedMessage));
     preview_text_ = new BTextView("preview");
     preview_text_->MakeEditable(false);
 
@@ -72,6 +80,19 @@ void HaikuMainWindow::MessageReceived(BMessage* message) {
             shell_host_.OpenComposer(BuildDefaultComposeMessage(shell_host_));
             return;
 
+        case kMailboxSelectedMessage:
+            if (const int32 index = mailbox_list_->CurrentSelection();
+                index >= 0 && static_cast<std::size_t>(index) < mailbox_ids_.size()) {
+                current_mailbox_id_ = mailbox_ids_[static_cast<std::size_t>(index)];
+                PopulateMessagesForCurrentMailbox();
+                PopulatePreview();
+            }
+            return;
+
+        case kMessageSelectedMessage:
+            PopulatePreview();
+            return;
+
         default:
             BWindow::MessageReceived(message);
             return;
@@ -86,21 +107,90 @@ bool HaikuMainWindow::QuitRequested() {
 void HaikuMainWindow::PopulateWorkspace() {
     mailbox_list_->MakeEmpty();
     message_list_->MakeEmpty();
+    mailbox_ids_.clear();
+    message_ids_.clear();
 
     for (const auto& mailbox : shell_host_.Workspace().Mailboxes()) {
         mailbox_list_->AddItem(new BStringItem(mailbox.display_name.c_str()));
+        mailbox_ids_.push_back(mailbox.id);
     }
 
-    const auto inbox_messages = shell_host_.Workspace().MessagesForMailbox("inbox");
-    for (const auto& message : inbox_messages) {
+    if (current_mailbox_id_.empty() && !mailbox_ids_.empty()) {
+        current_mailbox_id_ = mailbox_ids_.front();
+    }
+    if (current_mailbox_id_.empty()) {
+        current_mailbox_id_ = "inbox";
+    }
+
+    int32 selected_mailbox_index = -1;
+    for (std::size_t index = 0; index < mailbox_ids_.size(); ++index) {
+        if (mailbox_ids_[index] == current_mailbox_id_) {
+            selected_mailbox_index = static_cast<int32>(index);
+            break;
+        }
+    }
+    if (selected_mailbox_index < 0 && !mailbox_ids_.empty()) {
+        selected_mailbox_index = 0;
+        current_mailbox_id_ = mailbox_ids_.front();
+    }
+    if (selected_mailbox_index >= 0) {
+        mailbox_list_->Select(selected_mailbox_index);
+    }
+
+    PopulateMessagesForCurrentMailbox();
+    PopulatePreview();
+}
+
+void HaikuMainWindow::PopulateMessagesForCurrentMailbox() {
+    message_list_->MakeEmpty();
+    message_ids_.clear();
+
+    const auto messages = shell_host_.Workspace().MessagesForMailbox(current_mailbox_id_);
+    for (const auto& message : messages) {
         message_list_->AddItem(new BStringItem(message.subject.c_str()));
+        message_ids_.push_back(message.id);
     }
 
-    preview_text_->SetText(
-        "Hermes Hemera Haiku shell bootstrap\n\n"
-        "This window is the native shell scaffold. The next migration steps hang "
-        "Paige composition, WebKit display, and real workspace wiring off the "
-        "portable interfaces in src/hermes_port/core.");
+    int32 selected_message_index = -1;
+    for (std::size_t index = 0; index < message_ids_.size(); ++index) {
+        if (!current_message_id_.empty() && message_ids_[index] == current_message_id_) {
+            selected_message_index = static_cast<int32>(index);
+            break;
+        }
+    }
+    if (selected_message_index < 0 && !message_ids_.empty()) {
+        selected_message_index = 0;
+    }
+    if (selected_message_index >= 0) {
+        message_list_->Select(selected_message_index);
+        current_message_id_ = message_ids_[static_cast<std::size_t>(selected_message_index)];
+    } else {
+        current_message_id_.clear();
+    }
+}
+
+void HaikuMainWindow::PopulatePreview() {
+    const int32 index = message_list_->CurrentSelection();
+    if (index < 0 || static_cast<std::size_t>(index) >= message_ids_.size()) {
+        preview_text_->SetText("Select a message or draft to preview its summary.");
+        return;
+    }
+
+    current_message_id_ = message_ids_[static_cast<std::size_t>(index)];
+    const auto summary = shell_host_.Workspace().GetMessage(current_message_id_);
+    if (!summary) {
+        preview_text_->SetText("Message details unavailable.");
+        return;
+    }
+
+    const std::string preview =
+        "Mailbox: " + summary->mailbox_id + "\nSubject: " + summary->subject + "\nFrom: " +
+        summary->sender + "\n\n" + summary->preview;
+    preview_text_->SetText(preview.c_str());
+}
+
+void HaikuMainWindow::RefreshWorkspace() {
+    PopulateWorkspace();
 }
 
 }  // namespace hermes::haiku_port

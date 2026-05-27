@@ -49,6 +49,7 @@ target_link_libraries(
     hermes_port_tests
     PRIVATE
         hermes::legacy_transplants
+        hermes::port_paige
 )
 
 target_compile_definitions(
@@ -68,3 +69,36 @@ add_test(
     NAME hermes_no_legacy_path_references
     COMMAND "${CMAKE_SOURCE_DIR}/scripts/check_no_legacy_paths.sh" "${CMAKE_SOURCE_DIR}"
 )
+
+if(HERMES_BUILD_HAIKU_SHELL AND CMAKE_SYSTEM_NAME STREQUAL "Haiku")
+    add_executable(
+        hermes_haiku_compose_smoke
+        HaikuComposeSmokeTest.cpp
+    )
+
+    target_include_directories(
+        hermes_haiku_compose_smoke
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/src/hermes_port/haiku
+    )
+
+    target_link_libraries(
+        hermes_haiku_compose_smoke
+        PRIVATE
+            hermes::legacy_transplants
+            hermes::port_paige
+            be
+    )
+
+    target_compile_definitions(
+        hermes_haiku_compose_smoke
+        PRIVATE
+            HERMES_SOURCE_ROOT="${CMAKE_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME hermes_haiku_compose_smoke
+        COMMAND hermes_haiku_compose_smoke
+    )
+endif()

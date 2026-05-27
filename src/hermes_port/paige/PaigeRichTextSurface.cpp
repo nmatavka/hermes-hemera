@@ -58,7 +58,7 @@ bool PaigeRichTextSurface::Load(const RichTextDocument& document) {
     undo_stack_.clear();
     redo_stack_.clear();
     diagnostics_.clear();
-    return runtime_.IsAvailable();
+    return true;
 }
 
 RichTextDocument PaigeRichTextSurface::Snapshot() const {
@@ -73,7 +73,7 @@ bool PaigeRichTextSurface::SetSelection(const TextSelection& selection) {
     const std::size_t max_length = document_.plain_text.size() - selection.start;
     selection_.start = selection.start;
     selection_.length = std::min(selection.length, max_length);
-    return runtime_.IsAvailable();
+    return true;
 }
 
 TextSelection PaigeRichTextSurface::Selection() const {
@@ -90,7 +90,7 @@ bool PaigeRichTextSurface::ReplaceSelection(std::string_view replacement) {
     document_.plain_text.replace(selection_.start, selection_.length, replacement);
     selection_.length = replacement.size();
     SyncStyledBody();
-    return runtime_.IsAvailable();
+    return true;
 }
 
 bool PaigeRichTextSurface::Undo() {
@@ -102,7 +102,7 @@ bool PaigeRichTextSurface::Undo() {
     document_ = undo_stack_.back();
     undo_stack_.pop_back();
     selection_ = {};
-    return runtime_.IsAvailable();
+    return true;
 }
 
 bool PaigeRichTextSurface::Redo() {
@@ -114,12 +114,12 @@ bool PaigeRichTextSurface::Redo() {
     document_ = redo_stack_.back();
     redo_stack_.pop_back();
     selection_ = {};
-    return runtime_.IsAvailable();
+    return true;
 }
 
 bool PaigeRichTextSurface::SelectAll() {
     selection_ = {0, document_.plain_text.size()};
-    return runtime_.IsAvailable();
+    return true;
 }
 
 std::string PaigeRichTextSurface::CopySelection() const {
