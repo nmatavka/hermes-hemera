@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "hermes/RichTextFormat.h"
 #include "hermes/RichTextSurface.h"
 
 namespace hermes {
@@ -34,6 +35,7 @@ private:
     std::vector<RichTextDocument> undo_stack_;
     std::vector<RichTextDocument> redo_stack_;
     std::string clipboard_;
+    RichTextDocument clipboard_document_;
     std::vector<TextDiagnostic> diagnostics_;
 };
 

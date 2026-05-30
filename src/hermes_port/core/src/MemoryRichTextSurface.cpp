@@ -15,43 +15,13 @@ std::string CopySelectedText(const RichTextDocument& document, const TextSelecti
     return document.plain_text.substr(selection.start, std::min(selection.length, max_length));
 }
 
-std::string EscapeHtml(std::string_view text) {
-    std::string escaped;
-    escaped.reserve(text.size() + 32);
-
-    for (char ch : text) {
-        switch (ch) {
-            case '&':
-                escaped += "&amp;";
-                break;
-            case '<':
-                escaped += "&lt;";
-                break;
-            case '>':
-                escaped += "&gt;";
-                break;
-            case '"':
-                escaped += "&quot;";
-                break;
-            case '\'':
-                escaped += "&#39;";
-                break;
-            case '\n':
-                escaped += "<br/>\n";
-                break;
-            default:
-                escaped.push_back(ch);
-                break;
-        }
-    }
-
-    return escaped;
-}
-
 }  // namespace
 
 bool MemoryRichTextSurface::Load(const RichTextDocument& document) {
-    document_ = document;
+    document_ = NormalizeRichTextDocument(document);
+    if (RequiresHtmlSurface(document_)) {
+        document_.read_only = true;
+    }
     selection_ = {};
     undo_stack_.clear();
     redo_stack_.clear();
@@ -100,7 +70,6 @@ bool MemoryRichTextSurface::Undo() {
     document_ = undo_stack_.back();
     undo_stack_.pop_back();
     selection_ = {};
-    SyncStyledBody();
     return true;
 }
 
@@ -113,7 +82,6 @@ bool MemoryRichTextSurface::Redo() {
     document_ = redo_stack_.back();
     redo_stack_.pop_back();
     selection_ = {};
-    SyncStyledBody();
     return true;
 }
 
@@ -132,6 +100,10 @@ std::string MemoryRichTextSurface::CutSelection() {
     }
 
     clipboard_ = CopySelection();
+    clipboard_document_ = {};
+    clipboard_document_.plain_text = clipboard_;
+    clipboard_document_.html_fragment = PlainTextToHtml(clipboard_);
+    clipboard_document_.rtf_fragment = PlainTextToRtf(clipboard_);
     if (!clipboard_.empty()) {
         (void)ReplaceSelection("");
     }
@@ -144,6 +116,12 @@ bool MemoryRichTextSurface::Paste(std::string_view text) {
         return false;
     }
     clipboard_ = replacement;
+    if (!text.empty()) {
+        clipboard_document_ = {};
+        clipboard_document_.plain_text = replacement;
+        clipboard_document_.html_fragment = PlainTextToHtml(replacement);
+        clipboard_document_.rtf_fragment = PlainTextToRtf(replacement);
+    }
     return ReplaceSelection(replacement);
 }
 
@@ -168,11 +146,21 @@ void MemoryRichTextSurface::PushUndoState() {
 }
 
 void MemoryRichTextSurface::SyncStyledBody() {
-    if (document_.html_fragment.empty()) {
-        return;
+    const bool had_structured_content = HasAuthenticStyledContent(document_);
+    document_.paige_native_bytes.clear();
+    if (had_structured_content) {
+        document_.html_fragment = PlainTextToHtml(document_.plain_text);
+        document_.rtf_fragment = PlainTextToRtf(document_.plain_text);
+        if (document_.styled_source == StyledDocumentSource::kPaigeNative) {
+            document_.styled_source = StyledDocumentSource::kHtml;
+        }
+        document_.fidelity = StyledDocumentFidelity::kLossy;
+    } else {
+        document_.html_fragment.clear();
+        document_.rtf_fragment.clear();
+        document_.styled_source = StyledDocumentSource::kPlainText;
+        document_.fidelity = StyledDocumentFidelity::kLossless;
     }
-
-    document_.html_fragment = "<div>" + EscapeHtml(document_.plain_text) + "</div>";
 }
 
 }  // namespace hermes

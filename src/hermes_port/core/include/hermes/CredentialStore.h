@@ -11,6 +11,7 @@ namespace hermes {
 enum class CredentialKind {
     kIncoming,
     kOutgoing,
+    kOAuthClientSecret,
 };
 
 class CredentialStore {
@@ -23,6 +24,10 @@ public:
                                 std::string* error_message = nullptr) = 0;
     virtual std::optional<std::string> LoadCredential(std::string_view account_id,
                                                       CredentialKind kind) const = 0;
+    virtual bool DeleteCredential(std::string_view account_id,
+                                  CredentialKind kind,
+                                  std::string* error_message = nullptr) = 0;
+    virtual bool ClearAllCredentials(std::string* error_message = nullptr) = 0;
 };
 
 class InMemoryCredentialStore final : public CredentialStore {
@@ -33,6 +38,10 @@ public:
                         std::string* error_message = nullptr) override;
     std::optional<std::string> LoadCredential(std::string_view account_id,
                                               CredentialKind kind) const override;
+    bool DeleteCredential(std::string_view account_id,
+                          CredentialKind kind,
+                          std::string* error_message = nullptr) override;
+    bool ClearAllCredentials(std::string* error_message = nullptr) override;
 
 private:
     std::map<std::string, std::string> credentials_;
@@ -48,6 +57,10 @@ public:
                         std::string* error_message = nullptr) override;
     std::optional<std::string> LoadCredential(std::string_view account_id,
                                               CredentialKind kind) const override;
+    bool DeleteCredential(std::string_view account_id,
+                          CredentialKind kind,
+                          std::string* error_message = nullptr) override;
+    bool ClearAllCredentials(std::string* error_message = nullptr) override;
 
 private:
     std::filesystem::path CredentialsPath() const;

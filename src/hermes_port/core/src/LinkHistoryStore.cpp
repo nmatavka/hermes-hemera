@@ -1,5 +1,7 @@
 #include "hermes/LinkHistoryStore.h"
 
+#include <algorithm>
+
 #include "hermes/IniSettingsStore.h"
 
 namespace hermes {
@@ -80,8 +82,29 @@ std::vector<LinkHistoryEntry> FilesystemLinkHistoryStore::Entries() const {
     return entries_;
 }
 
+std::optional<LinkHistoryEntry> FilesystemLinkHistoryStore::FindById(std::string_view id) const {
+    const auto it = std::find_if(entries_.begin(), entries_.end(), [&](const auto& entry) {
+        return entry.id == id;
+    });
+    if (it == entries_.end()) {
+        return std::nullopt;
+    }
+    return *it;
+}
+
 void FilesystemLinkHistoryStore::AddEntry(const LinkHistoryEntry& entry) {
     entries_.push_back(entry);
+}
+
+bool FilesystemLinkHistoryStore::Remove(std::string_view id) {
+    const auto it = std::remove_if(entries_.begin(), entries_.end(), [&](const auto& entry) {
+        return entry.id == id;
+    });
+    if (it == entries_.end()) {
+        return false;
+    }
+    entries_.erase(it, entries_.end());
+    return true;
 }
 
 void FilesystemLinkHistoryStore::Clear() {

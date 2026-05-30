@@ -8,9 +8,9 @@
 #include "hermes/ComposeMessage.h"
 
 int main() {
-    BApplication app("application/x-vnd.hermes-hemera-workflow-smoke");
+    BApplication app("application/x-vnd.hemera-workflow-smoke");
 
-    hermes::haiku_port::HaikuShellHost shell_host;
+    hemera::haiku::HaikuShellHost shell_host;
     shell_host.Settings().SetString("Settings", "MailboxPreviewPane", "1");
     shell_host.Settings().SetString("Settings", "SetPreviewRead", "1");
     shell_host.Settings().SetString("Settings", "SetPreviewReadSeconds", "1");
@@ -21,7 +21,7 @@ int main() {
     shell_host.ShowMainWindow();
 
     std::error_code ignored;
-    const auto temp_root = std::filesystem::temp_directory_path() / "hermes-haiku-workflow-smoke";
+    const auto temp_root = std::filesystem::temp_directory_path() / "hemera-haiku-workflow-smoke";
     std::filesystem::create_directories(temp_root, ignored);
     const auto source_attachment = temp_root / "report.txt";
     {
@@ -44,6 +44,9 @@ int main() {
     message.sender = "sender@example.com";
     message.recipients = "receiver@example.com";
     message.plain_text_body = "Attachment and IMAP workflow smoke body";
+    message.html_body = "<p>Attachment and IMAP <strong>workflow</strong> smoke body</p>";
+    message.styled_source = hermes::StyledDocumentSource::kHtml;
+    message.styled_fidelity = hermes::StyledDocumentFidelity::kLossless;
     message.remote_id = "1";
     message.remote_mailbox = "INBOX";
     message.attachments.push_back({"report.txt",
@@ -60,6 +63,9 @@ int main() {
     }
 
     shell_host.ReloadWorkspace();
+    if (!shell_host.OpenMessageWindow("imap:INBOX", "smoke-imap-message")) {
+        return 1;
+    }
 
     const auto saved_attachment = temp_root / "saved-report.txt";
     if (!shell_host.SaveAttachment("imap:INBOX", "smoke-imap-message", 0, saved_attachment)) {

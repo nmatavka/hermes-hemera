@@ -4,6 +4,7 @@ add_library(
     src/ComposeController.cpp
     src/ComposeMessage.cpp
     src/ComposeQueue.cpp
+    src/EudoraStorage.cpp
     src/FilesystemMailboxStore.cpp
     src/FilesystemDraftStore.cpp
     src/FilesystemFilterStore.cpp
@@ -19,17 +20,29 @@ add_library(
     src/FlatFileNicknameStore.cpp
     src/DirectoryServiceCatalog.cpp
     src/GuiPreferences.cpp
+    src/HemeraIdentity.cpp
     src/HeuristicJunkScorer.cpp
     src/HunspellSpellService.cpp
     src/InMemoryWorkspaceModel.cpp
     src/IniSettingsStore.cpp
+    src/LegacyMessageStatus.cpp
     src/MailTaskModel.cpp
+    src/MailboxSort.cpp
+    src/MailTransferSettings.cpp
+    src/MailboxUiSettings.cpp
+    src/MailboxWorkflow.cpp
     src/MailTransportCoordinator.cpp
     src/MemoryAddressBookService.cpp
     src/MemoryRichTextSurface.cpp
     src/OpenSslTlsProvider.cpp
+    src/OAuthSupport.cpp
+    src/PopServerStatus.cpp
     src/RendererMode.cpp
     src/RuleBasedFilterEngine.cpp
+    src/RichTextFormat.cpp
+    src/SearchBarSettings.cpp
+    src/SelectedTextUrlSettings.cpp
+    src/ShellBehaviorSettings.cpp
     src/SyncStateStore.cpp
     src/SimpleSearchService.cpp
     src/SocketTransportService.cpp

@@ -63,6 +63,19 @@ std::optional<PopSyncState> FilesystemSyncStateStore::LoadPopState(std::string_v
             state.uidl_to_message_id[*uidl] = *message_id;
         }
     }
+    for (const auto& section : settings.Sections()) {
+        if (section != "ServerStatus") {
+            continue;
+        }
+        for (int index = 0;; ++index) {
+            const auto uidl = settings.GetString("ServerStatus", "Uidl" + std::to_string(index));
+            const auto status = settings.GetString("ServerStatus", "Status" + std::to_string(index));
+            if (!uidl || !status) {
+                break;
+            }
+            state.uidl_to_server_status[*uidl] = PopServerStatusFromString(*status);
+        }
+    }
     return state;
 }
 
@@ -81,6 +94,12 @@ bool FilesystemSyncStateStore::SavePopState(const PopSyncState& state, std::stri
     for (const auto& entry : state.uidl_to_message_id) {
         settings.SetString("UIDL", "Uidl" + std::to_string(index), entry.first);
         settings.SetString("UIDL", "Message" + std::to_string(index), entry.second);
+        ++index;
+    }
+    index = 0;
+    for (const auto& entry : state.uidl_to_server_status) {
+        settings.SetString("ServerStatus", "Uidl" + std::to_string(index), entry.first);
+        settings.SetString("ServerStatus", "Status" + std::to_string(index), ToString(entry.second));
         ++index;
     }
     return settings.SaveToFile(PopStatePath(SyncDirectory(), state.account_id), error_message);
@@ -104,6 +123,8 @@ std::optional<ImapMailboxSyncState> FilesystemSyncStateStore::LoadImapState(std:
     state.mailbox_id = std::string(mailbox_id);
     state.uid_validity = static_cast<std::uint64_t>(settings.GetInt("State", "UidValidity", 0));
     state.last_seen_uid = static_cast<std::uint64_t>(settings.GetInt("State", "LastSeenUid", 0));
+    state.auto_sync = settings.GetBool("State", "AutoSync", true);
+    state.show_deleted = settings.GetBool("State", "ShowDeleted", false);
     return state;
 }
 
@@ -121,6 +142,8 @@ bool FilesystemSyncStateStore::SaveImapState(const ImapMailboxSyncState& state,
     IniSettingsStore settings;
     settings.SetString("State", "UidValidity", std::to_string(state.uid_validity));
     settings.SetString("State", "LastSeenUid", std::to_string(state.last_seen_uid));
+    settings.SetString("State", "AutoSync", state.auto_sync ? "1" : "0");
+    settings.SetString("State", "ShowDeleted", state.show_deleted ? "1" : "0");
     return settings.SaveToFile(ImapStatePath(SyncDirectory(), state.account_id, state.mailbox_id), error_message);
 }
 

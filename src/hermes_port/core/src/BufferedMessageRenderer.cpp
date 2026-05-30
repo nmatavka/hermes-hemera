@@ -1,4 +1,5 @@
 #include "hermes/BufferedMessageRenderer.h"
+#include "hermes/RichTextFormat.h"
 
 #include <algorithm>
 #include <cctype>
@@ -21,32 +22,11 @@ bool IsWordBoundary(char ch) {
     return !std::isalnum(static_cast<unsigned char>(ch)) && ch != '_';
 }
 
-std::string StripTags(std::string_view html) {
-    std::string result;
-    result.reserve(html.size());
-
-    bool inside_tag = false;
-    for (char ch : html) {
-        if (ch == '<') {
-            inside_tag = true;
-            continue;
-        }
-        if (ch == '>') {
-            inside_tag = false;
-            continue;
-        }
-        if (!inside_tag) {
-            result.push_back(ch);
-        }
-    }
-
-    return result;
-}
-
 }  // namespace
 
 bool BufferedMessageRenderer::Load(const MessageRenderRequest& request) {
     request_ = request;
+    last_print_operation_ = PrintOperation::kNone;
     return true;
 }
 
@@ -89,25 +69,68 @@ std::string BufferedMessageRenderer::AllText() const {
         return request_.plain_text_body;
     }
     if (!request_.html_body.empty()) {
-        return StripTags(request_.html_body);
+        return StripHtml(request_.html_body);
+    }
+    if (!request_.rtf_body.empty()) {
+        return StripRtf(request_.rtf_body);
     }
     return {};
 }
 
 std::string BufferedMessageRenderer::AllHtml() const {
-    return request_.html_body;
+    if (!request_.html_body.empty()) {
+        return request_.html_body;
+    }
+    if (!request_.rtf_body.empty() || !request_.paige_native_body.empty() ||
+        request_.styled_source != StyledDocumentSource::kPlainText) {
+        if (request_.styled_fidelity == StyledDocumentFidelity::kRequiresHtmlSurface) {
+            return {};
+        }
+        RichTextDocument document;
+        document.plain_text = request_.plain_text_body;
+        document.rtf_fragment = request_.rtf_body;
+        document.paige_native_bytes = request_.paige_native_body;
+        document.styled_source = request_.styled_source;
+        document.fidelity = request_.styled_fidelity;
+        const RichTextDocument prepared = PrepareRichTextDocumentForPersistence(document);
+        return prepared.html_fragment;
+    }
+    if (!request_.plain_text_body.empty()) {
+        return PlainTextToHtml(request_.plain_text_body);
+    }
+    return {};
 }
 
 bool BufferedMessageRenderer::CanPrint() const {
-    return !request_.plain_text_body.empty() || !request_.html_body.empty();
+    return !request_.plain_text_body.empty() || !request_.html_body.empty() || !request_.rtf_body.empty();
+}
+
+bool BufferedMessageRenderer::CanDirectPrint() const {
+    return CanPrint();
 }
 
 bool BufferedMessageRenderer::PrintPreview() {
-    return CanPrint();
+    if (!CanPrint()) {
+        return false;
+    }
+    last_print_operation_ = PrintOperation::kPreview;
+    return true;
+}
+
+bool BufferedMessageRenderer::DirectPrint() {
+    if (!CanDirectPrint()) {
+        return false;
+    }
+    last_print_operation_ = PrintOperation::kDirect;
+    return true;
 }
 
 const MessageRenderRequest& BufferedMessageRenderer::Request() const {
     return request_;
+}
+
+BufferedMessageRenderer::PrintOperation BufferedMessageRenderer::LastPrintOperation() const {
+    return last_print_operation_;
 }
 
 }  // namespace hermes

@@ -31,7 +31,9 @@ public:
     virtual bool LoadFromFile(const std::filesystem::path& path, std::string* error_message = nullptr) = 0;
     virtual bool SaveToFile(const std::filesystem::path& path, std::string* error_message = nullptr) const = 0;
     virtual std::vector<LinkHistoryEntry> Entries() const = 0;
+    virtual std::optional<LinkHistoryEntry> FindById(std::string_view id) const = 0;
     virtual void AddEntry(const LinkHistoryEntry& entry) = 0;
+    virtual bool Remove(std::string_view id) = 0;
     virtual void Clear() = 0;
 };
 
@@ -40,7 +42,9 @@ public:
     bool LoadFromFile(const std::filesystem::path& path, std::string* error_message = nullptr) override;
     bool SaveToFile(const std::filesystem::path& path, std::string* error_message = nullptr) const override;
     std::vector<LinkHistoryEntry> Entries() const override;
+    std::optional<LinkHistoryEntry> FindById(std::string_view id) const override;
     void AddEntry(const LinkHistoryEntry& entry) override;
+    bool Remove(std::string_view id) override;
     void Clear() override;
 
 private:

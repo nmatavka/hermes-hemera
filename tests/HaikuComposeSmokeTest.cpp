@@ -4,9 +4,9 @@
 #include "hermes/ComposeMessage.h"
 
 int main() {
-    BApplication app("application/x-vnd.hermes-hemera-smoke");
+    BApplication app("application/x-vnd.hemera-smoke");
 
-    hermes::haiku_port::HaikuShellHost shell_host;
+    hemera::haiku::HaikuShellHost shell_host;
     shell_host.Settings().SetString("Settings", "HaikuComposeUtilityPaneHeight", "240");
     shell_host.Settings().SetString("Settings", "HaikuComposeUtilityPaneSelectedTab", "1");
     shell_host.ShowMainWindow();
@@ -16,6 +16,8 @@ int main() {
     message.headers.subject = "Haiku compose smoke";
     message.headers.to = "haiku@example.com";
     message.body.plain_text = "Compose window smoke body";
+    message.body.html_fragment = "<p>Compose window smoke body</p>";
+    message.body.styled_source = hermes::StyledDocumentSource::kHtml;
     shell_host.OpenComposer(message);
     shell_host.ReloadWorkspace();
     return 0;

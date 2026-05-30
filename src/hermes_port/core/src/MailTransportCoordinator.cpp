@@ -1,5 +1,7 @@
 #include "hermes/MailTransportCoordinator.h"
 #include "hermes/GssapiAuthenticator.h"
+#include "hermes/HemeraIdentity.h"
+#include "hermes/RichTextFormat.h"
 
 #include <algorithm>
 #include <atomic>
@@ -38,6 +40,9 @@ struct ParsedMimeMessage {
     ParsedHeaders headers;
     std::string plain_text_body;
     std::string html_body;
+    std::string rtf_body;
+    StyledDocumentSource styled_source = StyledDocumentSource::kPlainText;
+    StyledDocumentFidelity styled_fidelity = StyledDocumentFidelity::kLossless;
     std::vector<MessageAttachment> attachments;
     std::vector<std::string> attachment_payloads;
 };
@@ -351,6 +356,20 @@ std::string PopMessageId(std::string_view account_id, std::string_view uidl) {
     return "pop-" + SanitizeId(account_id) + "-" + SanitizeId(uidl);
 }
 
+bool UpdateStoredPopServerStatus(MessageStore& message_store,
+                                 std::string_view mailbox_id,
+                                 std::string_view message_id,
+                                 PopServerStatus status) {
+    auto message = message_store.GetMessage(mailbox_id, message_id);
+    if (!message) {
+        return false;
+    }
+    message->pop_server_status = status;
+    message->updated_at = std::time(nullptr);
+    std::string ignored;
+    return message_store.SaveMessage(*message, &ignored);
+}
+
 std::string ImapMessageId(std::string_view account_id, std::string_view mailbox_id, std::uint64_t uid) {
     return "imap-" + SanitizeId(account_id) + "-" + SanitizeId(mailbox_id) + "-" + std::to_string(uid);
 }
@@ -475,6 +494,13 @@ ParsedMimeMessage ParseMimeMessage(const std::string& raw_message) {
     if (content_type.find("multipart/") == std::string::npos) {
         if (content_type.find("text/html") != std::string::npos) {
             parsed.html_body = body;
+            parsed.plain_text_body = StripHtml(body);
+            parsed.styled_source = StyledDocumentSource::kHtml;
+        } else if (content_type.find("text/rtf") != std::string::npos ||
+                   content_type.find("application/rtf") != std::string::npos) {
+            parsed.rtf_body = body;
+            parsed.plain_text_body = StripRtf(body);
+            parsed.styled_source = StyledDocumentSource::kRtf;
         } else {
             parsed.plain_text_body = body;
         }
@@ -547,14 +573,30 @@ ParsedMimeMessage ParseMimeMessage(const std::string& raw_message) {
 
         if (part_type.find("text/html") != std::string::npos) {
             parsed.html_body = decoded_part_body;
+            parsed.styled_source = StyledDocumentSource::kHtml;
+        } else if (part_type.find("text/rtf") != std::string::npos ||
+                   part_type.find("application/rtf") != std::string::npos) {
+            parsed.rtf_body = decoded_part_body;
+            parsed.styled_source = StyledDocumentSource::kRtf;
         } else if (part_type.find("text/plain") != std::string::npos) {
             parsed.plain_text_body = decoded_part_body;
         }
     }
 
-    if (parsed.plain_text_body.empty() && !parsed.html_body.empty()) {
-        parsed.plain_text_body = parsed.html_body;
+    if (parsed.plain_text_body.empty() && !parsed.rtf_body.empty()) {
+        parsed.plain_text_body = StripRtf(parsed.rtf_body);
     }
+    if (parsed.plain_text_body.empty() && !parsed.html_body.empty()) {
+        parsed.plain_text_body = StripHtml(parsed.html_body);
+    }
+    parsed.styled_fidelity = ClassifyStyledDocument(
+        RichTextDocument{parsed.plain_text_body,
+                         parsed.html_body,
+                         false,
+                         parsed.rtf_body,
+                         {},
+                         parsed.styled_source,
+                         parsed.styled_fidelity});
     return parsed;
 }
 
@@ -569,7 +611,8 @@ BuiltReceivedMessage BuildReceivedMessage(const std::string& raw_message,
                                          bool deleted = false,
                                          bool answered = false,
                                          bool honor_download_limits = true,
-                                         bool honor_attachment_omit = true) {
+                                         bool honor_attachment_omit = true,
+                                         bool force_attachment_omit = false) {
     const ParsedMimeMessage parsed = ParseMimeMessage(raw_message);
     BuiltReceivedMessage built;
     MessageRecord& record = built.record;
@@ -583,13 +626,20 @@ BuiltReceivedMessage BuildReceivedMessage(const std::string& raw_message,
     record.recipients = parsed.headers.to;
     record.plain_text_body = parsed.plain_text_body;
     record.html_body = parsed.html_body;
+    record.rtf_body = parsed.rtf_body;
+    record.styled_source = parsed.styled_source;
+    record.styled_fidelity = parsed.styled_fidelity;
     record.delivery_state = MessageDeliveryState::kReceived;
+    record.legacy_status = unread ? LegacyMessageStatus::kUnread
+                                  : answered ? LegacyMessageStatus::kReplied
+                                             : LegacyMessageStatus::kRead;
     record.remote_id = std::string(remote_id);
     record.remote_mailbox = std::string(remote_mailbox);
     record.download_complete = download_complete;
     record.attachments = parsed.attachments;
     record.attachments_omitted =
-        honor_attachment_omit && account.imap_omit_attachments && !record.attachments.empty();
+        (force_attachment_omit || (honor_attachment_omit && account.imap_omit_attachments)) &&
+        !record.attachments.empty();
     record.flagged = flagged;
     record.deleted = deleted;
     record.answered = answered;
@@ -603,7 +653,7 @@ BuiltReceivedMessage BuildReceivedMessage(const std::string& raw_message,
         record.download_complete = false;
     }
     built.attachment_payloads = parsed.attachment_payloads;
-    if (honor_attachment_omit && account.imap_omit_attachments) {
+    if (force_attachment_omit || (honor_attachment_omit && account.imap_omit_attachments)) {
         for (auto& attachment : record.attachments) {
             attachment.omitted = true;
             attachment.download_complete = false;
@@ -611,6 +661,93 @@ BuiltReceivedMessage BuildReceivedMessage(const std::string& raw_message,
         built.attachment_payloads.clear();
     }
     return built;
+}
+
+void MergeFetchedImapMessageWithExisting(const MessageRecord& existing,
+                                         bool include_attachments,
+                                         MessageRecord* fetched,
+                                         std::vector<std::string>* attachment_payloads) {
+    if (fetched == nullptr) {
+        return;
+    }
+
+    if (fetched->subject.empty()) {
+        fetched->subject = existing.subject;
+    }
+    if (fetched->sender.empty()) {
+        fetched->sender = existing.sender;
+    }
+    if (fetched->recipients.empty()) {
+        fetched->recipients = existing.recipients;
+    }
+    if (fetched->html_body.empty()) {
+        fetched->html_body = existing.html_body;
+    }
+    if (fetched->rtf_body.empty()) {
+        fetched->rtf_body = existing.rtf_body;
+    }
+    if (fetched->paige_native_body.empty()) {
+        fetched->paige_native_body = existing.paige_native_body;
+    }
+
+    fetched->label_index = existing.label_index;
+    fetched->junk_score = existing.junk_score;
+    fetched->manually_junked = existing.manually_junked;
+    fetched->pop_server_status = existing.pop_server_status;
+    fetched->compose_options = existing.compose_options;
+    fetched->use_legacy_return_receipt_header = existing.use_legacy_return_receipt_header;
+    fetched->created_at = existing.created_at;
+
+    if (!include_attachments && !existing.attachments.empty()) {
+        fetched->attachments = existing.attachments;
+        fetched->attachments_omitted = true;
+        fetched->download_complete = false;
+        for (auto& attachment : fetched->attachments) {
+            attachment.omitted = true;
+            attachment.download_complete = false;
+            attachment.fetch_error.clear();
+            attachment.payload_path.clear();
+        }
+        if (attachment_payloads != nullptr) {
+            attachment_payloads->clear();
+        }
+    }
+}
+
+bool ResetCachedImapMessage(MessageStore& message_store,
+                            std::string_view mailbox_id,
+                            std::string_view message_id,
+                            std::string* error_message) {
+    auto message = message_store.GetMessage(mailbox_id, message_id);
+    if (!message) {
+        if (error_message) {
+            *error_message = "IMAP message is unavailable.";
+        }
+        return false;
+    }
+
+    MessageRecord updated = *message;
+    updated.plain_text_body.clear();
+    updated.html_body.clear();
+    updated.rtf_body.clear();
+    updated.paige_native_body.clear();
+    updated.download_complete = false;
+    updated.attachments_omitted = !updated.attachments.empty();
+    updated.last_error.clear();
+    updated.updated_at = std::time(nullptr);
+
+    for (std::size_t index = 0; index < updated.attachments.size(); ++index) {
+        if (const auto payload_path = message_store.AttachmentPath(mailbox_id, message_id, index)) {
+            std::error_code remove_error;
+            std::filesystem::remove(*payload_path, remove_error);
+        }
+        updated.attachments[index].download_complete = false;
+        updated.attachments[index].omitted = true;
+        updated.attachments[index].fetch_error.clear();
+        updated.attachments[index].payload_path.clear();
+    }
+
+    return message_store.SaveMessage(updated, error_message);
 }
 
 std::string ReadAttachmentBytes(const MessageAttachment& attachment) {
@@ -662,17 +799,17 @@ std::string BuildBodyPart(const MessageRecord& message) {
     std::ostringstream output;
     const bool quoted_printable = message.compose_options.quoted_printable;
     const std::string body_encoding = quoted_printable ? "quoted-printable" : "8bit";
-    if (!message.html_body.empty()) {
-        output << "Content-Type: multipart/alternative; boundary=\"hermes-alternative\"\r\n\r\n";
-        output << "--hermes-alternative\r\n";
+    if (message.styled_source != StyledDocumentSource::kPlainText && !message.html_body.empty()) {
+        output << "Content-Type: multipart/alternative; boundary=\"hemera-alternative\"\r\n\r\n";
+        output << "--hemera-alternative\r\n";
         output << "Content-Type: text/plain; charset=UTF-8\r\n";
         output << "Content-Transfer-Encoding: " << body_encoding << "\r\n\r\n";
         output << EncodeTextBody(message.plain_text_body, quoted_printable) << "\r\n";
-        output << "--hermes-alternative\r\n";
+        output << "--hemera-alternative\r\n";
         output << "Content-Type: text/html; charset=UTF-8\r\n";
         output << "Content-Transfer-Encoding: " << body_encoding << "\r\n\r\n";
         output << EncodeTextBody(message.html_body, quoted_printable) << "\r\n";
-        output << "--hermes-alternative--\r\n";
+        output << "--hemera-alternative--\r\n";
     } else {
         output << "Content-Type: text/plain; charset=UTF-8\r\n";
         output << "Content-Transfer-Encoding: " << body_encoding << "\r\n\r\n";
@@ -697,12 +834,12 @@ std::string BuildSmtpMessage(const MessageRecord& message) {
     output << "MIME-Version: 1.0\r\n";
 
     if (!message.attachments.empty()) {
-        output << "Content-Type: multipart/mixed; boundary=\"hermes-mixed\"\r\n\r\n";
-        output << "--hermes-mixed\r\n";
+        output << "Content-Type: multipart/mixed; boundary=\"hemera-mixed\"\r\n\r\n";
+        output << "--hemera-mixed\r\n";
         output << BuildBodyPart(message);
         for (const auto& attachment : message.attachments) {
             const std::string payload = ReadAttachmentBytes(attachment);
-            output << "--hermes-mixed\r\n";
+            output << "--hemera-mixed\r\n";
             output << "Content-Type: "
                    << (attachment.content_type.empty() ? "application/octet-stream" : attachment.content_type);
             if (!attachment.name.empty()) {
@@ -721,7 +858,7 @@ std::string BuildSmtpMessage(const MessageRecord& message) {
             output << "Content-Transfer-Encoding: base64\r\n\r\n";
             output << WrapBase64(Base64Encode(payload)) << "\r\n";
         }
-        output << "--hermes-mixed--\r\n";
+        output << "--hemera-mixed--\r\n";
         return output.str();
     }
 
@@ -795,6 +932,59 @@ struct AuthFailureDetails {
     std::string message;
 };
 
+struct PopFetchOptions {
+    bool retrieve_new = true;
+    bool retrieve_marked = false;
+    bool delete_marked = false;
+    bool delete_retrieved = false;
+    bool delete_all = false;
+    bool fetch_headers_only = false;
+};
+
+std::string OAuthIdentity(const AccountProfile& account) {
+    if (!account.email_address.empty()) {
+        return account.email_address;
+    }
+    return account.login_name;
+}
+
+std::string OAuthMechanismName(OAuthAuthMechanism mechanism) {
+    switch (mechanism) {
+        case OAuthAuthMechanism::kXOAUTH2:
+            return "XOAUTH2";
+        case OAuthAuthMechanism::kOAUTHBEARER:
+            return "OAUTHBEARER";
+    }
+    return "XOAUTH2";
+}
+
+std::string BuildOAuthSaslPayload(const AccountProfile& account,
+                                  std::string_view host,
+                                  std::uint16_t port,
+                                  std::string_view access_token) {
+    const std::string identity = OAuthIdentity(account);
+    if (account.oauth.auth_mechanism == OAuthAuthMechanism::kOAUTHBEARER) {
+        return "n,a=" + identity + ",\1host=" + std::string(host) + "\1port=" + std::to_string(port) +
+               "\1auth=Bearer " + std::string(access_token) + "\1\1";
+    }
+    return "user=" + identity + "\1auth=Bearer " + std::string(access_token) + "\1\1";
+}
+
+bool UsesIncomingOAuth(const AccountProfile& account) {
+    return (account.uses_pop && account.pop_auth == PopAuthMode::kOAuth2) ||
+           (account.uses_imap && account.imap_auth == ImapAuthMode::kOAuth2);
+}
+
+bool UsesOutgoingOAuth(const AccountProfile& account) {
+    return account.smtp_auth == SmtpAuthMode::kOAuth2;
+}
+
+bool IsOAuthRefreshRetryable(const std::optional<AuthFailureDetails>& failure) {
+    return failure &&
+           (failure->kind == MailTaskErrorKind::kCredentialRejected ||
+            failure->kind == MailTaskErrorKind::kServerRejected);
+}
+
 class TaskScope {
 public:
     TaskScope(MailTaskModel& task_model,
@@ -847,15 +1037,16 @@ private:
 class SmtpSession {
 public:
     SmtpSession(const AccountProfile& account,
-                std::string password,
+                std::string secret,
                 TransportService& transport_service,
                 const TlsProvider& tls_provider)
         : account_(account),
-          password_(std::move(password)),
+          secret_(std::move(secret)),
           transport_service_(transport_service),
           tls_provider_(tls_provider) {}
 
     bool SendMessage(const MessageRecord& message, std::string* error_message) {
+        last_auth_failure_.reset();
         auto connection = transport_service_.Connect(
             {account_.outgoing_server, account_.outgoing_port, MapSecurity(account_.outgoing_security), 5000},
             error_message);
@@ -924,9 +1115,14 @@ public:
         return true;
     }
 
+    const std::optional<AuthFailureDetails>& LastAuthFailure() const {
+        return last_auth_failure_;
+    }
+
 private:
     bool Ehlo(TransportConnection& connection, std::vector<std::string>* lines, std::string* error_message) {
-        if (!connection.Send("EHLO hermes-hemera\r\n", error_message)) {
+        if (!connection.Send(std::string("EHLO ") + std::string(kHemeraSmtpEhloName) + "\r\n",
+                             error_message)) {
             return false;
         }
 
@@ -955,6 +1151,7 @@ private:
     bool Authenticate(TransportConnection& connection,
                       const std::vector<std::string>& ehlo_lines,
                       std::string* error_message) {
+        last_auth_failure_.reset();
         const std::string auth_capabilities = [&]() {
             for (const auto& line : ehlo_lines) {
                 if (StartsWithInsensitive(line, "AUTH ")) {
@@ -964,8 +1161,21 @@ private:
             return std::string();
         }();
 
-        if (account_.smtp_auth == SmtpAuthMode::kNone || auth_capabilities.empty()) {
+        if (account_.smtp_auth == SmtpAuthMode::kNone) {
             return true;
+        }
+        if (auth_capabilities.empty()) {
+            last_auth_failure_ = AuthFailureDetails{
+                account_.smtp_auth == SmtpAuthMode::kOAuth2 ? MailTaskErrorKind::kOAuthMechanismRejected
+                                                            : MailTaskErrorKind::kUnsupportedMechanism,
+                account_.smtp_auth == SmtpAuthMode::kOAuth2 ? OAuthMechanismName(account_.oauth.auth_mechanism)
+                                                            : "SMTP",
+                "SMTP server did not advertise any supported authentication mechanisms.",
+            };
+            if (error_message) {
+                *error_message = last_auth_failure_->message;
+            }
+            return false;
         }
 
         if (account_.smtp_auth == SmtpAuthMode::kCramMd5 &&
@@ -982,13 +1192,18 @@ private:
             }
             const std::string challenge = Base64Decode(line.substr(4));
             const std::string response =
-                Base64Encode(account_.login_name + " " + HmacMd5Hex(password_, challenge));
+                Base64Encode(account_.login_name + " " + HmacMd5Hex(secret_, challenge));
             if (!connection.Send(response + "\r\n", error_message)) {
                 return false;
             }
             if (!connection.ReceiveLine(&line, error_message) || line.rfind("235", 0) != 0) {
+                last_auth_failure_ = AuthFailureDetails{
+                    MailTaskErrorKind::kCredentialRejected,
+                    "CRAM-MD5",
+                    "SMTP CRAM-MD5 authentication failed.",
+                };
                 if (error_message) {
-                    *error_message = "SMTP CRAM-MD5 authentication failed.";
+                    *error_message = last_auth_failure_->message;
                 }
                 return false;
             }
@@ -1009,25 +1224,78 @@ private:
             if (!connection.ReceiveLine(&line, error_message) || line.rfind("334", 0) != 0) {
                 return false;
             }
-            if (!connection.Send(Base64Encode(password_) + "\r\n", error_message)) {
+            if (!connection.Send(Base64Encode(secret_) + "\r\n", error_message)) {
                 return false;
             }
             if (!connection.ReceiveLine(&line, error_message) || line.rfind("235", 0) != 0) {
+                last_auth_failure_ = AuthFailureDetails{
+                    MailTaskErrorKind::kCredentialRejected,
+                    "LOGIN",
+                    "SMTP LOGIN authentication failed.",
+                };
                 if (error_message) {
-                    *error_message = "SMTP LOGIN authentication failed.";
+                    *error_message = last_auth_failure_->message;
                 }
                 return false;
             }
             return true;
         }
 
+        if (account_.smtp_auth == SmtpAuthMode::kOAuth2) {
+            const std::string mechanism = OAuthMechanismName(account_.oauth.auth_mechanism);
+            if (ToLower(auth_capabilities).find(ToLower(mechanism)) == std::string::npos) {
+                last_auth_failure_ = AuthFailureDetails{
+                    MailTaskErrorKind::kOAuthMechanismRejected,
+                    mechanism,
+                    "SMTP server does not support " + mechanism + ".",
+                };
+                if (error_message) {
+                    *error_message = last_auth_failure_->message;
+                }
+                return false;
+            }
+
+            const std::string payload = Base64Encode(
+                BuildOAuthSaslPayload(account_, account_.outgoing_server, account_.outgoing_port, secret_));
+            if (!connection.Send("AUTH " + mechanism + " " + payload + "\r\n", error_message)) {
+                return false;
+            }
+            std::string line;
+            if (!connection.ReceiveLine(&line, error_message)) {
+                return false;
+            }
+            if (line.rfind("235", 0) == 0) {
+                return true;
+            }
+            if (line.rfind("334", 0) == 0) {
+                connection.Send("\r\n", nullptr);
+                connection.ReceiveLine(&line, nullptr);
+            }
+            last_auth_failure_ = AuthFailureDetails{
+                line.rfind("535", 0) == 0 || line.rfind("534", 0) == 0
+                    ? MailTaskErrorKind::kCredentialRejected
+                    : MailTaskErrorKind::kServerRejected,
+                mechanism,
+                "SMTP " + mechanism + " authentication failed: " + line,
+            };
+            if (error_message) {
+                *error_message = last_auth_failure_->message;
+            }
+            return false;
+        }
+
         if (auth_capabilities.find("plain") != std::string::npos) {
-            const std::string payload = Base64Encode("\0" + account_.login_name + "\0" + password_);
+            const std::string payload = Base64Encode("\0" + account_.login_name + "\0" + secret_);
             return SendExpect(connection, "AUTH PLAIN " + payload + "\r\n", "235", error_message);
         }
 
+        last_auth_failure_ = AuthFailureDetails{
+            MailTaskErrorKind::kUnsupportedMechanism,
+            "SMTP",
+            "SMTP server does not support the configured authentication mode.",
+        };
         if (error_message) {
-            *error_message = "SMTP server does not support the configured authentication mode.";
+            *error_message = last_auth_failure_->message;
         }
         return false;
     }
@@ -1053,27 +1321,29 @@ private:
     }
 
     const AccountProfile& account_;
-    std::string password_;
+    std::string secret_;
     TransportService& transport_service_;
     const TlsProvider& tls_provider_;
+    std::optional<AuthFailureDetails> last_auth_failure_;
 };
 
 class PopSession {
 public:
     PopSession(const AccountProfile& account,
-               std::string password,
+               std::string secret,
                MessageStore& message_store,
                TransportService& transport_service,
                const TlsProvider& tls_provider,
                const GssapiEngine& gssapi_engine)
         : account_(account),
-          password_(std::move(password)),
+          secret_(std::move(secret)),
           message_store_(message_store),
           transport_service_(transport_service),
           tls_provider_(tls_provider),
           gssapi_engine_(gssapi_engine) {}
 
     bool FetchMessages(PopSyncState* state,
+                       const PopFetchOptions& options,
                        std::vector<MessageRecord>* messages,
                        std::string* error_message) {
         last_auth_failure_.reset();
@@ -1127,6 +1397,153 @@ public:
             }
         }
 
+        std::map<std::string, int> index_by_uidl;
+        for (const auto& entry : uidls) {
+            index_by_uidl[entry.second] = entry.first;
+        }
+
+        const auto fetch_message = [&](int index,
+                                       std::string_view uidl,
+                                       bool headers_only,
+                                       bool delete_after_fetch,
+                                       PopServerStatus retained_status) -> bool {
+            const std::string command =
+                headers_only ? ("TOP " + std::to_string(index) + " 0\r\n")
+                             : ("RETR " + std::to_string(index) + "\r\n");
+            if (!connection->Send(command, error_message)) {
+                return false;
+            }
+            if (!connection->ReceiveLine(&line, error_message) || line.rfind("+OK", 0) != 0) {
+                return false;
+            }
+
+            std::string raw_message;
+            if (!ReadDotTerminatedBlock(*connection, &raw_message, error_message)) {
+                return false;
+            }
+
+            BuiltReceivedMessage built =
+                BuildReceivedMessage(raw_message, account_, "inbox", uidl, "INBOX", true, !headers_only);
+            MessageRecord record = std::move(built.record);
+            record.id = PopMessageId(account_.id, uidl);
+            record.pop_server_status = delete_after_fetch ? PopServerStatus::kNone : retained_status;
+            if (messages != nullptr) {
+                messages->push_back(record);
+            }
+            if (state != nullptr) {
+                state->uidl_to_message_id[std::string(uidl)] = record.id;
+                if (record.pop_server_status == PopServerStatus::kNone) {
+                    state->uidl_to_server_status.erase(std::string(uidl));
+                } else {
+                    state->uidl_to_server_status[std::string(uidl)] = record.pop_server_status;
+                }
+            }
+            if (!PersistAttachmentPayloads(message_store_, record, built.attachment_payloads, error_message)) {
+                return false;
+            }
+            if (delete_after_fetch) {
+                if (!SendSimple(
+                        *connection, "DELE " + std::to_string(index) + "\r\n", "+OK", error_message)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        std::set<std::string> handled_uidls;
+        if (state) {
+            for (auto status_it = state->uidl_to_server_status.begin();
+                 status_it != state->uidl_to_server_status.end();) {
+                const std::string uidl = status_it->first;
+                const auto message_id_it = state->uidl_to_message_id.find(uidl);
+                const auto index_it = index_by_uidl.find(uidl);
+                if (index_it == index_by_uidl.end()) {
+                    if (message_id_it != state->uidl_to_message_id.end()) {
+                        UpdateStoredPopServerStatus(message_store_, "inbox", message_id_it->second, PopServerStatus::kNone);
+                        state->uidl_to_message_id.erase(message_id_it);
+                    }
+                    status_it = state->uidl_to_server_status.erase(status_it);
+                    continue;
+                }
+
+                const PopServerStatus pending_status = status_it->second;
+                const bool delete_marked =
+                    options.delete_all ||
+                    (options.delete_marked &&
+                     (pending_status == PopServerStatus::kDelete ||
+                      (pending_status == PopServerStatus::kFetchDelete &&
+                       !options.retrieve_marked)));
+                if (delete_marked) {
+                    if (!SendSimple(*connection,
+                                    "DELE " + std::to_string(index_it->second) + "\r\n",
+                                    "+OK",
+                                    error_message)) {
+                        return false;
+                    }
+                    if (message_id_it != state->uidl_to_message_id.end()) {
+                        UpdateStoredPopServerStatus(message_store_, "inbox", message_id_it->second, PopServerStatus::kNone);
+                        state->uidl_to_message_id.erase(message_id_it);
+                    }
+                    handled_uidls.insert(uidl);
+                    status_it = state->uidl_to_server_status.erase(status_it);
+                    continue;
+                }
+
+                const bool retrieve_marked =
+                    options.retrieve_marked &&
+                    (pending_status == PopServerStatus::kFetch ||
+                     pending_status == PopServerStatus::kFetchDelete);
+                if (retrieve_marked) {
+                    const bool delete_after_fetch =
+                        options.delete_retrieved || pending_status == PopServerStatus::kFetchDelete ||
+                        !account_.leave_mail_on_server || account_.delete_mail_from_server;
+                    const PopServerStatus retained_status =
+                        delete_after_fetch ? PopServerStatus::kNone : PopServerStatus::kLeave;
+                    if (message_id_it != state->uidl_to_message_id.end()) {
+                        UpdateStoredPopServerStatus(message_store_, "inbox", message_id_it->second, retained_status);
+                    }
+                    if (!fetch_message(index_it->second,
+                                       uidl,
+                                       options.fetch_headers_only,
+                                       delete_after_fetch,
+                                       retained_status)) {
+                        return false;
+                    }
+                    handled_uidls.insert(uidl);
+                    if (delete_after_fetch) {
+                        status_it = state->uidl_to_server_status.erase(status_it);
+                    } else {
+                        status_it->second = retained_status;
+                        ++status_it;
+                    }
+                    continue;
+                }
+
+                ++status_it;
+            }
+        }
+
+        if (options.delete_all) {
+            for (const auto& entry : uidls) {
+                if (handled_uidls.count(entry.second) > 0) {
+                    continue;
+                }
+                if (!SendSimple(
+                        *connection, "DELE " + std::to_string(entry.first) + "\r\n", "+OK", error_message)) {
+                    return false;
+                }
+                if (state != nullptr) {
+                    if (const auto mapped = state->uidl_to_message_id.find(entry.second);
+                        mapped != state->uidl_to_message_id.end()) {
+                        UpdateStoredPopServerStatus(message_store_, "inbox", mapped->second, PopServerStatus::kNone);
+                        state->uidl_to_message_id.erase(mapped);
+                    }
+                    state->uidl_to_server_status.erase(entry.second);
+                }
+                handled_uidls.insert(entry.second);
+            }
+        }
+
         std::map<int, std::size_t> sizes;
         if (!connection->Send("LIST\r\n", error_message)) {
             return false;
@@ -1145,46 +1562,31 @@ public:
         }
 
         for (const auto& entry : uidls) {
+            if (handled_uidls.count(entry.second) > 0) {
+                continue;
+            }
             if (state && state->uidl_to_message_id.count(entry.second) > 0) {
                 continue;
             }
-            if (account_.skip_big_messages && account_.big_message_threshold > 0) {
+            if (!options.retrieve_new) {
+                continue;
+            }
+            if (!options.fetch_headers_only && account_.skip_big_messages && account_.big_message_threshold > 0) {
                 const auto size_it = sizes.find(entry.first);
                 if (size_it != sizes.end() && size_it->second > account_.big_message_threshold) {
                     continue;
                 }
             }
-
-            if (!connection->Send("RETR " + std::to_string(entry.first) + "\r\n", error_message)) {
+            const bool delete_after_fetch =
+                options.delete_retrieved || !account_.leave_mail_on_server || account_.delete_mail_from_server;
+            const PopServerStatus retained_status =
+                delete_after_fetch ? PopServerStatus::kNone : PopServerStatus::kLeave;
+            if (!fetch_message(entry.first,
+                               entry.second,
+                               options.fetch_headers_only,
+                               delete_after_fetch,
+                               retained_status)) {
                 return false;
-            }
-            if (!connection->ReceiveLine(&line, error_message) || line.rfind("+OK", 0) != 0) {
-                return false;
-            }
-
-            std::string raw_message;
-            if (!ReadDotTerminatedBlock(*connection, &raw_message, error_message)) {
-                return false;
-            }
-
-            BuiltReceivedMessage built =
-                BuildReceivedMessage(raw_message, account_, "inbox", entry.second, "INBOX", true, true);
-            MessageRecord record = std::move(built.record);
-            record.id = PopMessageId(account_.id, entry.second);
-            if (messages) {
-                messages->push_back(record);
-            }
-            if (state) {
-                state->uidl_to_message_id[entry.second] = record.id;
-            }
-            if (!PersistAttachmentPayloads(message_store_, record, built.attachment_payloads, error_message)) {
-                return false;
-            }
-
-            if (!account_.leave_mail_on_server || account_.delete_mail_from_server) {
-                if (!SendSimple(*connection, "DELE " + std::to_string(entry.first) + "\r\n", "+OK", error_message)) {
-                    return false;
-                }
             }
         }
 
@@ -1204,7 +1606,7 @@ private:
         switch (account_.pop_auth) {
             case PopAuthMode::kPassword:
                 return SendSimple(connection, "USER " + account_.login_name + "\r\n", "+OK", error_message) &&
-                       SendSimple(connection, "PASS " + password_ + "\r\n", "+OK", error_message);
+                       SendSimple(connection, "PASS " + secret_ + "\r\n", "+OK", error_message);
 
             case PopAuthMode::kAPOP: {
                 const std::size_t start = greeting.find('<');
@@ -1217,7 +1619,7 @@ private:
                 }
                 const std::string challenge = greeting.substr(start, end - start + 1);
                 return SendSimple(connection,
-                                  "APOP " + account_.login_name + " " + Md5Hex(challenge + password_) + "\r\n",
+                                  "APOP " + account_.login_name + " " + Md5Hex(challenge + secret_) + "\r\n",
                                   "+OK",
                                   error_message);
             }
@@ -1307,6 +1709,63 @@ private:
                     *error_message = last_auth_failure_->message;
                 }
                 return false;
+
+            case PopAuthMode::kOAuth2: {
+                const std::string mechanism = OAuthMechanismName(account_.oauth.auth_mechanism);
+                if (!connection.Send("AUTH " + mechanism + "\r\n", error_message)) {
+                    return false;
+                }
+                std::string line;
+                if (!connection.ReceiveLine(&line, error_message)) {
+                    return false;
+                }
+                if (StartsWithInsensitive(line, "-ERR")) {
+                    last_auth_failure_ = AuthFailureDetails{
+                        MailTaskErrorKind::kOAuthMechanismRejected,
+                        mechanism,
+                        "POP server rejected " + mechanism + ": " + line,
+                    };
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
+                    }
+                    return false;
+                }
+                if (StartsWithInsensitive(line, "+OK")) {
+                    return true;
+                }
+                if (line.empty() || line[0] != '+') {
+                    last_auth_failure_ = AuthFailureDetails{
+                        MailTaskErrorKind::kHandshakeFailed,
+                        mechanism,
+                        "POP " + mechanism + " challenge was not received.",
+                    };
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
+                    }
+                    return false;
+                }
+                const std::string payload =
+                    Base64Encode(BuildOAuthSaslPayload(account_, account_.incoming_server, account_.incoming_port, secret_));
+                if (!connection.Send(payload + "\r\n", error_message)) {
+                    return false;
+                }
+                if (!connection.ReceiveLine(&line, error_message)) {
+                    return false;
+                }
+                if (StartsWithInsensitive(line, "+OK")) {
+                    return true;
+                }
+                last_auth_failure_ = AuthFailureDetails{
+                    StartsWithInsensitive(line, "-ERR") ? MailTaskErrorKind::kCredentialRejected
+                                                        : MailTaskErrorKind::kServerRejected,
+                    mechanism,
+                    "POP " + mechanism + " authentication failed: " + line,
+                };
+                if (error_message) {
+                    *error_message = last_auth_failure_->message;
+                }
+                return false;
+            }
         }
         return false;
     }
@@ -1332,7 +1791,7 @@ private:
     }
 
     const AccountProfile& account_;
-    std::string password_;
+    std::string secret_;
     MessageStore& message_store_;
     TransportService& transport_service_;
     const TlsProvider& tls_provider_;
@@ -1346,16 +1805,21 @@ struct ImapFetchItem {
     std::string raw_message;
 };
 
+enum class ImapFetchVariant {
+    kDefault,
+    kFull,
+};
+
 class ImapSession {
 public:
     ImapSession(const AccountProfile& account,
-                std::string password,
+                std::string secret,
                 MessageStore& message_store,
                 TransportService& transport_service,
                 const TlsProvider& tls_provider,
                 const GssapiEngine& gssapi_engine)
         : account_(account),
-          password_(std::move(password)),
+          secret_(std::move(secret)),
           message_store_(message_store),
           transport_service_(transport_service),
           tls_provider_(tls_provider),
@@ -1528,6 +1992,17 @@ public:
         return true;
     }
 
+    bool ExpungeMailbox(std::string_view remote_mailbox, std::string* error_message) {
+        if (!ConnectAndAuthenticate(error_message)) {
+            return false;
+        }
+        std::vector<std::string> ignored;
+        if (!SelectMailbox(remote_mailbox, &ignored, error_message)) {
+            return false;
+        }
+        return RunSimpleTagged("EXPUNGE", nullptr, error_message);
+    }
+
     bool MoveMessage(std::string_view remote_mailbox,
                      std::string_view remote_message_id,
                      std::string_view destination_remote_mailbox,
@@ -1552,11 +2027,12 @@ public:
         return SetDeleted(remote_mailbox, remote_message_id, true, true, error_message);
     }
 
-    bool FetchFullMessage(std::string_view remote_mailbox,
-                          std::string_view remote_message_id,
-                          MessageRecord* record,
-                          std::vector<std::string>* attachment_payloads,
-                          std::string* error_message) {
+    bool FetchMessage(std::string_view remote_mailbox,
+                      std::string_view remote_message_id,
+                      ImapFetchVariant variant,
+                      MessageRecord* record,
+                      std::vector<std::string>* attachment_payloads,
+                      std::string* error_message) {
         if (!ConnectAndAuthenticate(error_message)) {
             return false;
         }
@@ -1564,9 +2040,39 @@ public:
         if (!SelectMailbox(remote_mailbox, &ignored, error_message)) {
             return false;
         }
+        std::string fetch_section;
+        bool include_attachments = false;
+        bool download_complete = false;
+        bool force_attachment_omit = true;
+        switch (variant) {
+            case ImapFetchVariant::kDefault:
+                switch (account_.imap_download_mode) {
+                    case ImapDownloadMode::kMinimalHeaders:
+                        fetch_section = "BODY.PEEK[HEADER]";
+                        download_complete = false;
+                        break;
+                    case ImapDownloadMode::kMessageBody:
+                        fetch_section = "BODY.PEEK[TEXT]";
+                        download_complete = true;
+                        break;
+                    case ImapDownloadMode::kFullMessage:
+                        fetch_section = "BODY.PEEK[]";
+                        include_attachments = true;
+                        download_complete = true;
+                        force_attachment_omit = false;
+                        break;
+                }
+                break;
+            case ImapFetchVariant::kFull:
+                fetch_section = "BODY.PEEK[]";
+                include_attachments = true;
+                download_complete = true;
+                force_attachment_omit = false;
+                break;
+        }
         std::vector<ImapFetchItem> items;
         if (!FetchItemsByRange(std::string(remote_message_id) + ":" + std::string(remote_message_id),
-                               "BODY.PEEK[]",
+                               fetch_section,
                                &items,
                                error_message)) {
             return false;
@@ -1584,12 +2090,13 @@ public:
                                                          std::string(remote_message_id),
                                                          remote_mailbox,
                                                          items.front().flags.find("\\Seen") == std::string::npos,
-                                                         true,
+                                                         download_complete,
                                                          items.front().flags.find("\\Flagged") != std::string::npos,
                                                          items.front().flags.find("\\Deleted") != std::string::npos,
                                                          items.front().flags.find("\\Answered") != std::string::npos,
                                                          false,
-                                                         false);
+                                                         false,
+                                                         force_attachment_omit);
         if (record) {
             *record = std::move(built.record);
             record->id = ImapMessageId(account_.id,
@@ -1639,7 +2146,7 @@ private:
 
         switch (account_.imap_auth) {
             case ImapAuthMode::kPassword:
-                return RunSimpleTagged("LOGIN \"" + account_.login_name + "\" \"" + password_ + "\"",
+                return RunSimpleTagged("LOGIN \"" + account_.login_name + "\" \"" + secret_ + "\"",
                                        nullptr,
                                        error_message);
 
@@ -1657,7 +2164,7 @@ private:
                 }
                 const std::string challenge = Base64Decode(line.substr(2));
                 const std::string response =
-                    Base64Encode(account_.login_name + " " + HmacMd5Hex(password_, challenge));
+                    Base64Encode(account_.login_name + " " + HmacMd5Hex(secret_, challenge));
                 if (!connection_->Send(response + "\r\n", error_message)) {
                     return false;
                 }
@@ -1727,6 +2234,62 @@ private:
                             "GSSAPI",
                             *error_message,
                         };
+                    }
+                    return false;
+                }
+                last_auth_failure_.reset();
+                return true;
+            }
+
+            case ImapAuthMode::kOAuth2: {
+                const std::string mechanism = OAuthMechanismName(account_.oauth.auth_mechanism);
+                const std::string tag = NextTag();
+                if (!connection_->Send(tag + " AUTHENTICATE " + mechanism + "\r\n", error_message)) {
+                    return false;
+                }
+                std::string line;
+                if (!connection_->ReceiveLine(&line, error_message)) {
+                    return false;
+                }
+                if (StartsWithInsensitive(line, tag + " BAD") || StartsWithInsensitive(line, tag + " NO")) {
+                    last_auth_failure_ = AuthFailureDetails{
+                        MailTaskErrorKind::kOAuthMechanismRejected,
+                        mechanism,
+                        "IMAP server rejected " + mechanism + ": " + line,
+                    };
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
+                    }
+                    return false;
+                }
+                if (line.empty() || line[0] != '+') {
+                    last_auth_failure_ = AuthFailureDetails{
+                        MailTaskErrorKind::kHandshakeFailed,
+                        mechanism,
+                        "IMAP " + mechanism + " challenge was not received.",
+                    };
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
+                    }
+                    return false;
+                }
+                const std::string payload =
+                    Base64Encode(BuildOAuthSaslPayload(account_, account_.incoming_server, account_.incoming_port, secret_));
+                if (!connection_->Send(payload + "\r\n", error_message)) {
+                    return false;
+                }
+                if (!ReadTaggedResult(tag, nullptr, error_message)) {
+                    last_auth_failure_ = AuthFailureDetails{
+                        error_message != nullptr &&
+                                (StartsWithInsensitive(*error_message, "IMAP command failed: " + tag + " BAD") ||
+                                 StartsWithInsensitive(*error_message, "IMAP command failed: " + tag + " NO"))
+                            ? MailTaskErrorKind::kCredentialRejected
+                            : MailTaskErrorKind::kServerRejected,
+                        mechanism,
+                        error_message == nullptr ? "IMAP OAuth authentication failed." : *error_message,
+                    };
+                    if (error_message) {
+                        *error_message = last_auth_failure_->message;
                     }
                     return false;
                 }
@@ -1846,7 +2409,7 @@ private:
     }
 
     const AccountProfile& account_;
-    std::string password_;
+    std::string secret_;
     MessageStore& message_store_;
     TransportService& transport_service_;
     const TlsProvider& tls_provider_;
@@ -1858,6 +2421,80 @@ private:
 
 std::optional<AccountProfile> FindAccountById(const AccountService& account_service, std::string_view account_id) {
     return account_service.FindById(account_id);
+}
+
+bool LoadIncomingSecret(const AccountProfile& account,
+                        CredentialStore& credential_store,
+                        OAuthDeviceFlowService* oauth_device_flow_service,
+                        bool force_refresh,
+                        std::string* secret,
+                        MailTaskErrorKind* error_kind,
+                        std::string* error_message) {
+    if (UsesIncomingOAuth(account)) {
+        if (oauth_device_flow_service == nullptr) {
+            if (error_kind) {
+                *error_kind = MailTaskErrorKind::kProviderConfiguration;
+            }
+            if (error_message) {
+                *error_message = "OAuth service is unavailable for incoming authentication.";
+            }
+            return false;
+        }
+        return oauth_device_flow_service->AcquireAccessToken(
+            account, force_refresh, secret, error_kind, error_message);
+    }
+
+    const auto credential = credential_store.LoadCredential(account.id, CredentialKind::kIncoming);
+    if (!credential) {
+        if (error_kind) {
+            *error_kind = MailTaskErrorKind::kCredentialAcquisitionFailed;
+        }
+        if (error_message) {
+            *error_message = "Missing incoming credential for account " + account.id;
+        }
+        return false;
+    }
+    if (secret) {
+        *secret = *credential;
+    }
+    return true;
+}
+
+bool LoadOutgoingSecret(const AccountProfile& account,
+                        CredentialStore& credential_store,
+                        OAuthDeviceFlowService* oauth_device_flow_service,
+                        bool force_refresh,
+                        std::string* secret,
+                        MailTaskErrorKind* error_kind,
+                        std::string* error_message) {
+    if (UsesOutgoingOAuth(account)) {
+        if (oauth_device_flow_service == nullptr) {
+            if (error_kind) {
+                *error_kind = MailTaskErrorKind::kProviderConfiguration;
+            }
+            if (error_message) {
+                *error_message = "OAuth service is unavailable for outgoing authentication.";
+            }
+            return false;
+        }
+        return oauth_device_flow_service->AcquireAccessToken(
+            account, force_refresh, secret, error_kind, error_message);
+    }
+
+    const auto credential = credential_store.LoadCredential(account.id, CredentialKind::kOutgoing);
+    if (!credential) {
+        if (error_kind) {
+            *error_kind = MailTaskErrorKind::kCredentialAcquisitionFailed;
+        }
+        if (error_message) {
+            *error_message = "Missing outgoing credential for account " + account.id;
+        }
+        return false;
+    }
+    if (secret) {
+        *secret = *credential;
+    }
+    return true;
 }
 
 bool EnsureRemoteMailbox(MailboxStore& mailbox_store,
@@ -1977,6 +2614,7 @@ bool DeleteMailboxMessages(MessageStore& message_store,
 bool ReplaySingleImapAction(const ImapActionRecord& action,
                             AccountService& account_service,
                             CredentialStore& credential_store,
+                            OAuthDeviceFlowService* oauth_device_flow_service,
                             SyncStateStore& sync_state_store,
                             MailboxStore& mailbox_store,
                             MessageStore& message_store,
@@ -1996,15 +2634,26 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
         return false;
     }
 
-    const auto password = credential_store.LoadCredential(account->id, CredentialKind::kIncoming);
-    if (!password) {
-        if (error_message) {
-            *error_message = "Missing incoming credential for account " + account->id;
+    std::string incoming_secret;
+    MailTaskErrorKind secret_error_kind = MailTaskErrorKind::kUnknown;
+    if (!LoadIncomingSecret(*account,
+                            credential_store,
+                            oauth_device_flow_service,
+                            false,
+                            &incoming_secret,
+                            &secret_error_kind,
+                            error_message)) {
+        if (auth_failure) {
+            *auth_failure = AuthFailureDetails{
+                secret_error_kind,
+                UsesIncomingOAuth(*account) ? OAuthMechanismName(account->oauth.auth_mechanism) : "LOGIN",
+                error_message == nullptr ? std::string() : *error_message,
+            };
         }
         return false;
     }
 
-    ImapSession session(*account, *password, message_store, transport_service, tls_provider, gssapi_engine);
+    ImapSession session(*account, incoming_secret, message_store, transport_service, tls_provider, gssapi_engine);
     switch (action.kind) {
         case ImapActionKind::kDelete:
             if (!action.destination_remote_mailbox.empty()) {
@@ -2036,6 +2685,15 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
                                                    false,
                                                    false,
                                                    error_message);
+                if (!ok && auth_failure && session.LastAuthFailure()) {
+                    *auth_failure = session.LastAuthFailure();
+                }
+                return ok;
+            }
+
+        case ImapActionKind::kExpungeMailbox:
+            {
+                const bool ok = session.ExpungeMailbox(action.remote_mailbox, error_message);
                 if (!ok && auth_failure && session.LastAuthFailure()) {
                     *auth_failure = session.LastAuthFailure();
                 }
@@ -2126,18 +2784,39 @@ bool ReplaySingleImapAction(const ImapActionRecord& action,
             return mailbox_store.DeleteMailbox(action.mailbox_id, error_message);
 
         case ImapActionKind::kFetchAttachment:
-        case ImapActionKind::kFetchFullMessage: {
+        case ImapActionKind::kFetchDefaultMessage:
+        case ImapActionKind::kFetchFullMessage:
+        case ImapActionKind::kRedownloadDefaultMessage:
+        case ImapActionKind::kRedownloadFullMessage: {
+            const bool include_attachments =
+                action.kind == ImapActionKind::kFetchAttachment ||
+                action.kind == ImapActionKind::kFetchFullMessage ||
+                action.kind == ImapActionKind::kRedownloadFullMessage;
+            const bool redownload =
+                action.kind == ImapActionKind::kRedownloadDefaultMessage ||
+                action.kind == ImapActionKind::kRedownloadFullMessage;
+            const ImapFetchVariant variant =
+                include_attachments ? ImapFetchVariant::kFull : ImapFetchVariant::kDefault;
+            const auto existing_message = message_store.GetMessage(action.mailbox_id, action.message_id);
+            if (redownload &&
+                !ResetCachedImapMessage(message_store, action.mailbox_id, action.message_id, error_message)) {
+                return false;
+            }
             MessageRecord record;
             std::vector<std::string> payloads;
-            if (!session.FetchFullMessage(action.remote_mailbox,
-                                          action.remote_message_id,
-                                          &record,
-                                          &payloads,
-                                          error_message)) {
+            if (!session.FetchMessage(action.remote_mailbox,
+                                      action.remote_message_id,
+                                      variant,
+                                      &record,
+                                      &payloads,
+                                      error_message)) {
                 if (auth_failure && session.LastAuthFailure()) {
                     *auth_failure = session.LastAuthFailure();
                 }
                 return false;
+            }
+            if (existing_message) {
+                MergeFetchedImapMessageWithExisting(*existing_message, include_attachments, &record, &payloads);
             }
             if (!message_store.SaveMessage(record, error_message)) {
                 return false;
@@ -2197,6 +2876,8 @@ MailTransportCoordinator::MailTransportCoordinator(AccountService& account_servi
                                                    TransportService& transport_service,
                                                    TlsProvider& tls_provider,
                                                    MailTaskModel& task_model,
+                                                   OAuthDeviceFlowService* oauth_device_flow_service,
+                                                   OAuthTokenStore* oauth_token_store,
                                                    ImapActionStore* imap_action_store,
                                                    const GssapiEngine* gssapi_engine)
     : account_service_(account_service),
@@ -2207,10 +2888,17 @@ MailTransportCoordinator::MailTransportCoordinator(AccountService& account_servi
       transport_service_(transport_service),
       tls_provider_(tls_provider),
       task_model_(task_model),
+      oauth_device_flow_service_(oauth_device_flow_service),
+      oauth_token_store_(oauth_token_store),
       imap_action_store_(imap_action_store),
       gssapi_engine_(gssapi_engine != nullptr ? gssapi_engine : &DefaultGssapiEngine()) {}
 
 MailTransportSummary MailTransportCoordinator::SendQueued() {
+    return SendQueuedInternal(nullptr);
+}
+
+MailTransportSummary MailTransportCoordinator::SendQueuedInternal(
+    const std::vector<std::string>* account_filter) {
     MailTransportSummary summary;
     std::string ignored;
     mailbox_store_.EnsureMailbox({"sent", "Sent", {}, {}, MailboxProtocol::kLocal, {}, false, true, 0}, &ignored);
@@ -2226,30 +2914,67 @@ MailTransportSummary MailTransportCoordinator::SendQueued() {
         return summary;
     }
 
+    const auto account_selected = [account_filter](std::string_view account_id) {
+        if (account_filter == nullptr || account_filter->empty()) {
+            return true;
+        }
+        return std::find(account_filter->begin(), account_filter->end(), account_id) !=
+               account_filter->end();
+    };
+
     for (const auto& queued_message : queued_messages) {
         if (queued_message.delivery_state != MessageDeliveryState::kQueued &&
             queued_message.delivery_state != MessageDeliveryState::kFailed) {
             continue;
         }
-        const AccountProfile& account =
-            queued_message.account_id.empty() ? accounts.front() : account_by_id[queued_message.account_id];
-        const auto password = credential_store_.LoadCredential(account.id, CredentialKind::kOutgoing);
-        if (!password) {
-            summary.error_message = "Missing outgoing credential for account " + account.id;
+        if (queued_message.scheduled_send_at > 0 && queued_message.scheduled_send_at > NowUnixSeconds()) {
+            continue;
+        }
+        const AccountProfile* account = nullptr;
+        if (queued_message.account_id.empty()) {
+            account = &accounts.front();
+        } else if (const auto it = account_by_id.find(queued_message.account_id);
+                   it != account_by_id.end()) {
+            account = &it->second;
+        }
+        if (account == nullptr) {
+            summary.warnings.push_back("Queued message account is unavailable: " +
+                                       queued_message.account_id);
+            continue;
+        }
+        if (!account_selected(account->id)) {
+            continue;
+        }
+        std::string outgoing_secret;
+        MailTaskErrorKind secret_error_kind = MailTaskErrorKind::kUnknown;
+        if (!LoadOutgoingSecret(*account,
+                                credential_store_,
+                                oauth_device_flow_service_,
+                                false,
+                                &outgoing_secret,
+                                &secret_error_kind,
+                                &summary.error_message)) {
+            summary.warnings.push_back(summary.error_message);
             continue;
         }
 
-        TaskScope task(task_model_, MailTaskKind::kSending, DisplayName(account), "Send queued mail", "Connecting");
-        SmtpSession smtp(account, *password, transport_service_, tls_provider_);
+        TaskScope task(
+            task_model_, MailTaskKind::kSending, DisplayName(*account), "Send queued mail", "Connecting");
+        SmtpSession smtp(*account, outgoing_secret, transport_service_, tls_provider_);
 
         MessageRecord updated = queued_message;
         updated.delivery_state = MessageDeliveryState::kSending;
+        if (updated.legacy_status == LegacyMessageStatus::kTimeQueued) {
+            updated.legacy_status = LegacyMessageStatus::kQueued;
+        }
+        updated.scheduled_send_at = 0;
         updated.updated_at = NowUnixSeconds();
         message_store_.SaveMessage(updated, nullptr);
 
         std::string error_message;
         if (updated.compose_options.attachment_encoding != AttachmentEncodingMode::kMime) {
             updated.delivery_state = MessageDeliveryState::kFailed;
+            updated.legacy_status = LegacyMessageStatus::kUnsendable;
             updated.last_error = "Legacy BinHex/Uuencode attachment encoding is not implemented yet.";
             updated.updated_at = NowUnixSeconds();
             message_store_.SaveMessage(updated, nullptr);
@@ -2257,17 +2982,38 @@ MailTransportSummary MailTransportCoordinator::SendQueued() {
             summary.warnings.push_back(updated.last_error);
             continue;
         }
-        if (!smtp.SendMessage(updated, &error_message)) {
+        bool sent = smtp.SendMessage(updated, &error_message);
+        std::optional<AuthFailureDetails> send_failure = smtp.LastAuthFailure();
+        if (!sent && UsesOutgoingOAuth(*account) && IsOAuthRefreshRetryable(send_failure)) {
+            if (LoadOutgoingSecret(*account,
+                                   credential_store_,
+                                   oauth_device_flow_service_,
+                                   true,
+                                   &outgoing_secret,
+                                   &secret_error_kind,
+                                   &error_message)) {
+                SmtpSession retry_smtp(*account, outgoing_secret, transport_service_, tls_provider_);
+                sent = retry_smtp.SendMessage(updated, &error_message);
+                send_failure = retry_smtp.LastAuthFailure();
+            }
+        }
+        if (!sent) {
             updated.delivery_state = MessageDeliveryState::kFailed;
+            updated.legacy_status = LegacyMessageStatus::kUnsendable;
             updated.last_error = error_message;
             updated.updated_at = NowUnixSeconds();
             message_store_.SaveMessage(updated, nullptr);
-            task.Fail("Failed", error_message);
+            if (send_failure) {
+                task.Fail("Failed", error_message, send_failure->kind, send_failure->mechanism);
+            } else {
+                task.Fail("Failed", error_message);
+            }
             summary.warnings.push_back(error_message);
             continue;
         }
-
         updated.delivery_state = MessageDeliveryState::kSent;
+        updated.legacy_status = LegacyMessageStatus::kSent;
+        updated.scheduled_send_at = 0;
         updated.last_error.clear();
         updated.updated_at = NowUnixSeconds();
         if (updated.compose_options.keep_copies) {
@@ -2291,6 +3037,11 @@ MailTransportSummary MailTransportCoordinator::SendQueued() {
 }
 
 MailTransportSummary MailTransportCoordinator::CheckMail() {
+    return CheckMailInternal(nullptr);
+}
+
+MailTransportSummary MailTransportCoordinator::CheckMailInternal(
+    const MailTransferRequest* request) {
     MailTransportSummary summary;
     stop_requested_ = false;
     const auto accounts = account_service_.Accounts();
@@ -2302,11 +3053,36 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
     std::string ignored;
     mailbox_store_.EnsureMailbox({"inbox", "Inbox", {}, {}, MailboxProtocol::kLocal, {}, false, true, 0}, &ignored);
 
+    const std::vector<std::string>* account_filter =
+        request != nullptr && !request->selected_account_ids.empty() ? &request->selected_account_ids : nullptr;
+    const auto account_selected = [account_filter](std::string_view account_id) {
+        if (account_filter == nullptr || account_filter->empty()) {
+            return true;
+        }
+        return std::find(account_filter->begin(), account_filter->end(), account_id) !=
+               account_filter->end();
+    };
+
+    const bool ignore_check_mail_by_default =
+        request != nullptr && (request->ignore_check_mail_by_default || account_filter != nullptr);
+    PopFetchOptions pop_options;
+    if (request != nullptr) {
+        pop_options.retrieve_new = request->retrieve_new || request->fetch_headers;
+        pop_options.retrieve_marked = request->retrieve_marked;
+        pop_options.delete_marked = request->delete_marked;
+        pop_options.delete_retrieved = request->delete_retrieved;
+        pop_options.delete_all = request->delete_all;
+        pop_options.fetch_headers_only = request->fetch_headers;
+    }
+
     if (imap_action_store_) {
         for (auto action : imap_action_store_->ListActions()) {
             if (stop_requested_) {
                 summary.warnings.push_back("IMAP action replay stopped by user request.");
                 break;
+            }
+            if (!account_selected(action.account_id)) {
+                continue;
             }
             if (action.state == ImapActionState::kCompleted || action.state == ImapActionState::kCancelled) {
                 continue;
@@ -2328,6 +3104,7 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
             if (ReplaySingleImapAction(action,
                                        account_service_,
                                        credential_store_,
+                                       oauth_device_flow_service_,
                                        sync_state_store_,
                                        mailbox_store_,
                                        message_store_,
@@ -2363,23 +3140,60 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
             summary.warnings.push_back("Mail check stopped by user request.");
             break;
         }
-        if (!account.check_mail_by_default && (account.uses_pop || account.uses_imap)) {
+        if (!account_selected(account.id)) {
+            continue;
+        }
+        if (!ignore_check_mail_by_default && !account.check_mail_by_default &&
+            (account.uses_pop || account.uses_imap)) {
             continue;
         }
 
         if (account.uses_pop) {
-            const auto password = credential_store_.LoadCredential(account.id, CredentialKind::kIncoming);
-            if (!password) {
-                summary.warnings.push_back("Missing incoming credential for account " + account.id);
+            std::string incoming_secret;
+            MailTaskErrorKind secret_error_kind = MailTaskErrorKind::kUnknown;
+            std::string error_message;
+            if (!LoadIncomingSecret(account,
+                                    credential_store_,
+                                    oauth_device_flow_service_,
+                                    false,
+                                    &incoming_secret,
+                                    &secret_error_kind,
+                                    &error_message)) {
+                summary.warnings.push_back(error_message);
                 continue;
             }
 
-            PopSyncState state = sync_state_store_.LoadPopState(account.id).value_or(PopSyncState{account.id, {}});
+            PopSyncState state =
+                sync_state_store_.LoadPopState(account.id).value_or(PopSyncState{account.id, {}, {}});
             std::vector<MessageRecord> messages;
             TaskScope task(task_model_, MailTaskKind::kReceiving, DisplayName(account), "Check POP mail", "Checking");
-            std::string error_message;
-            PopSession session(account, *password, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
-            if (!session.FetchMessages(&state, &messages, &error_message)) {
+            PopSession session(account, incoming_secret, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
+            if (!session.FetchMessages(&state, pop_options, &messages, &error_message)) {
+                if (UsesIncomingOAuth(account) && IsOAuthRefreshRetryable(session.LastAuthFailure()) &&
+                    LoadIncomingSecret(account,
+                                       credential_store_,
+                                       oauth_device_flow_service_,
+                                       true,
+                                       &incoming_secret,
+                                       &secret_error_kind,
+                                       &error_message)) {
+                    PopSession retry_session(
+                        account, incoming_secret, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
+                    messages.clear();
+                    if (retry_session.FetchMessages(&state, pop_options, &messages, &error_message)) {
+                        goto pop_fetch_complete;
+                    }
+                    if (retry_session.LastAuthFailure()) {
+                        task.Fail("Failed",
+                                  error_message,
+                                  retry_session.LastAuthFailure()->kind,
+                                  retry_session.LastAuthFailure()->mechanism);
+                    } else {
+                        task.Fail("Failed", error_message);
+                    }
+                    summary.warnings.push_back(error_message);
+                    continue;
+                }
                 if (session.LastAuthFailure()) {
                     task.Fail("Failed",
                               error_message,
@@ -2392,6 +3206,7 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
                 continue;
             }
 
+pop_fetch_complete:
             sync_state_store_.SavePopState(state, nullptr);
             for (const auto& message : messages) {
                 message_store_.SaveMessage(message, nullptr);
@@ -2401,18 +3216,50 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
         }
 
         if (account.uses_imap) {
-            const auto password = credential_store_.LoadCredential(account.id, CredentialKind::kIncoming);
-            if (!password) {
-                summary.warnings.push_back("Missing incoming credential for account " + account.id);
+            std::string incoming_secret;
+            MailTaskErrorKind secret_error_kind = MailTaskErrorKind::kUnknown;
+            std::string error_message;
+            if (!LoadIncomingSecret(account,
+                                    credential_store_,
+                                    oauth_device_flow_service_,
+                                    false,
+                                    &incoming_secret,
+                                    &secret_error_kind,
+                                    &error_message)) {
+                summary.warnings.push_back(error_message);
                 continue;
             }
 
             TaskScope discovery_task(
                 task_model_, MailTaskKind::kMailboxDiscovery, DisplayName(account), "Refresh IMAP mailboxes", "Listing");
-            std::string error_message;
-            ImapSession session(account, *password, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
+            ImapSession session(account, incoming_secret, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
             std::vector<std::string> remote_mailboxes;
             if (!session.DiscoverMailboxes(&remote_mailboxes, &error_message)) {
+                if (UsesIncomingOAuth(account) && IsOAuthRefreshRetryable(session.LastAuthFailure()) &&
+                    LoadIncomingSecret(account,
+                                       credential_store_,
+                                       oauth_device_flow_service_,
+                                       true,
+                                       &incoming_secret,
+                                       &secret_error_kind,
+                                       &error_message)) {
+                    ImapSession retry_session(
+                        account, incoming_secret, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
+                    remote_mailboxes.clear();
+                    if (retry_session.DiscoverMailboxes(&remote_mailboxes, &error_message)) {
+                        goto imap_discovery_complete;
+                    }
+                    if (retry_session.LastAuthFailure()) {
+                        discovery_task.Fail("Failed",
+                                            error_message,
+                                            retry_session.LastAuthFailure()->kind,
+                                            retry_session.LastAuthFailure()->mechanism);
+                    } else {
+                        discovery_task.Fail("Failed", error_message);
+                    }
+                    summary.warnings.push_back(error_message);
+                    continue;
+                }
                 if (session.LastAuthFailure()) {
                     discovery_task.Fail("Failed",
                                         error_message,
@@ -2424,6 +3271,7 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
                 summary.warnings.push_back(error_message);
                 continue;
             }
+imap_discovery_complete:
             discovery_task.Complete("Listed");
 
             summary.mailboxes_discovered += remote_mailboxes.size();
@@ -2444,12 +3292,44 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
                 ImapMailboxSyncState state =
                     sync_state_store_.LoadImapState(account.id, local_mailbox_id)
                         .value_or(ImapMailboxSyncState{account.id, local_mailbox_id, 0, 0});
+                if (!state.auto_sync) {
+                    continue;
+                }
                 std::vector<MessageRecord> messages;
                 TaskScope sync_task(
                     task_model_, MailTaskKind::kImapSync, DisplayName(account), "Sync " + remote_mailbox, "Syncing");
                 ImapSession sync_session(
-                    account, *password, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
+                    account, incoming_secret, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
                 if (!sync_session.SyncMailbox(remote_mailbox, &state, &messages, &error_message)) {
+                    if (UsesIncomingOAuth(account) && IsOAuthRefreshRetryable(sync_session.LastAuthFailure()) &&
+                        LoadIncomingSecret(account,
+                                           credential_store_,
+                                           oauth_device_flow_service_,
+                                           true,
+                                           &incoming_secret,
+                                           &secret_error_kind,
+                                           &error_message)) {
+                        ImapSession retry_sync(account,
+                                               incoming_secret,
+                                               message_store_,
+                                               transport_service_,
+                                               tls_provider_,
+                                               *gssapi_engine_);
+                        messages.clear();
+                        if (retry_sync.SyncMailbox(remote_mailbox, &state, &messages, &error_message)) {
+                            goto imap_sync_complete;
+                        }
+                        if (retry_sync.LastAuthFailure()) {
+                            sync_task.Fail("Failed",
+                                           error_message,
+                                           retry_sync.LastAuthFailure()->kind,
+                                           retry_sync.LastAuthFailure()->mechanism);
+                        } else {
+                            sync_task.Fail("Failed", error_message);
+                        }
+                        summary.warnings.push_back(error_message);
+                        continue;
+                    }
                     if (sync_session.LastAuthFailure()) {
                         sync_task.Fail("Failed",
                                        error_message,
@@ -2461,6 +3341,7 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
                     summary.warnings.push_back(error_message);
                     continue;
                 }
+imap_sync_complete:
                 sync_state_store_.SaveImapState(state, nullptr);
                 for (const auto& message : messages) {
                     message_store_.SaveMessage(message, nullptr);
@@ -2476,8 +3357,8 @@ MailTransportSummary MailTransportCoordinator::CheckMail() {
 }
 
 MailTransportSummary MailTransportCoordinator::SendAndReceive() {
-    MailTransportSummary send_summary = SendQueued();
-    MailTransportSummary receive_summary = CheckMail();
+    MailTransportSummary send_summary = SendQueuedInternal(nullptr);
+    MailTransportSummary receive_summary = CheckMailInternal(nullptr);
 
     MailTransportSummary combined;
     combined.success = send_summary.success && receive_summary.success;
@@ -2490,6 +3371,49 @@ MailTransportSummary MailTransportCoordinator::SendAndReceive() {
         combined.error_message = send_summary.error_message;
     } else {
         combined.error_message = receive_summary.error_message;
+    }
+    return combined;
+}
+
+MailTransportSummary MailTransportCoordinator::ExecuteMailTransfer(
+    const MailTransferRequest& request) {
+    MailTransportSummary send_summary;
+    MailTransportSummary receive_summary;
+    MailTransportSummary combined;
+
+    if (request.send_queued) {
+        const std::vector<std::string>* account_filter =
+            request.selected_account_ids.empty() ? nullptr : &request.selected_account_ids;
+        send_summary = SendQueuedInternal(account_filter);
+    } else {
+        send_summary.success = true;
+    }
+
+    const bool needs_receive = request.retrieve_new || request.fetch_headers ||
+                               request.delete_marked || request.retrieve_marked ||
+                               request.delete_retrieved || request.delete_all;
+    if (needs_receive) {
+        receive_summary = CheckMailInternal(&request);
+    } else {
+        receive_summary.success = true;
+    }
+
+    combined.success = send_summary.success && receive_summary.success &&
+                       combined.error_message.empty();
+    combined.messages_sent = send_summary.messages_sent;
+    combined.messages_received = receive_summary.messages_received;
+    combined.mailboxes_discovered = receive_summary.mailboxes_discovered;
+    combined.warnings.insert(
+        combined.warnings.end(), send_summary.warnings.begin(), send_summary.warnings.end());
+    combined.warnings.insert(
+        combined.warnings.end(), receive_summary.warnings.begin(), receive_summary.warnings.end());
+    if (!send_summary.error_message.empty()) {
+        combined.error_message = send_summary.error_message;
+    } else if (!receive_summary.error_message.empty()) {
+        combined.error_message = receive_summary.error_message;
+    }
+    if (!combined.error_message.empty()) {
+        combined.success = false;
     }
     return combined;
 }
@@ -2509,9 +3433,15 @@ MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view m
         return summary;
     }
 
-    const auto password = credential_store_.LoadCredential(account->id, CredentialKind::kIncoming);
-    if (!password) {
-        summary.error_message = "Missing incoming credential for account " + account->id;
+    std::string incoming_secret;
+    MailTaskErrorKind secret_error_kind = MailTaskErrorKind::kUnknown;
+    if (!LoadIncomingSecret(*account,
+                            credential_store_,
+                            oauth_device_flow_service_,
+                            false,
+                            &incoming_secret,
+                            &secret_error_kind,
+                            &summary.error_message)) {
         return summary;
     }
 
@@ -2540,6 +3470,7 @@ MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view m
             if (ReplaySingleImapAction(action,
                                        account_service_,
                                        credential_store_,
+                                       oauth_device_flow_service_,
                                        sync_state_store_,
                                        mailbox_store_,
                                        message_store_,
@@ -2579,11 +3510,27 @@ MailTransportSummary MailTransportCoordinator::RefreshMailbox(std::string_view m
 
     std::vector<MessageRecord> messages;
     std::string error_message;
-    ImapSession session(*account, *password, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
+    ImapSession session(*account, incoming_secret, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
     if (!session.SyncMailbox(mailbox->remote_name, &state, &messages, &error_message)) {
+        if (UsesIncomingOAuth(*account) && IsOAuthRefreshRetryable(session.LastAuthFailure()) &&
+            LoadIncomingSecret(*account,
+                               credential_store_,
+                               oauth_device_flow_service_,
+                               true,
+                               &incoming_secret,
+                               &secret_error_kind,
+                               &error_message)) {
+            ImapSession retry_session(
+                *account, incoming_secret, message_store_, transport_service_, tls_provider_, *gssapi_engine_);
+            messages.clear();
+            if (retry_session.SyncMailbox(mailbox->remote_name, &state, &messages, &error_message)) {
+                goto refresh_sync_complete;
+            }
+        }
         summary.error_message = error_message;
         return summary;
     }
+refresh_sync_complete:
     sync_state_store_.SaveImapState(state, nullptr);
     for (const auto& message : messages) {
         message_store_.SaveMessage(message, nullptr);
@@ -2692,6 +3639,52 @@ bool MailTransportCoordinator::QueueUndeleteMessage(std::string_view mailbox_id,
     action.remote_mailbox = mailbox->remote_name;
     action.message_id = std::string(message_id);
     action.remote_message_id = message->remote_id;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueExpungeMailbox(std::string_view mailbox_id,
+                                                   std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    if (!mailbox || mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP mailbox not found.";
+        }
+        return false;
+    }
+
+    bool has_deleted_messages = false;
+    for (const auto& message : message_store_.ListMessages(mailbox_id)) {
+        if (!message.deleted) {
+            continue;
+        }
+        has_deleted_messages = true;
+        if (!message_store_.DeleteMessage(mailbox_id, message.id, error_message)) {
+            return false;
+        }
+    }
+
+    if (!has_deleted_messages) {
+        if (error_message) {
+            *error_message = "No deleted IMAP messages are available to purge.";
+        }
+        return false;
+    }
+
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kExpungeMailbox;
+    action.state = ImapActionState::kPending;
+    action.account_id = mailbox->account_id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
     action.created_at = NowUnixSeconds();
     action.updated_at = action.created_at;
     return imap_action_store_->SaveAction(action, error_message);
@@ -2954,6 +3947,37 @@ bool MailTransportCoordinator::QueueFetchAttachment(std::string_view mailbox_id,
     return imap_action_store_->SaveAction(action, error_message);
 }
 
+bool MailTransportCoordinator::QueueFetchDefaultMessage(std::string_view mailbox_id,
+                                                        std::string_view message_id,
+                                                        std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!mailbox || !message || mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP message is unavailable.";
+        }
+        return false;
+    }
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = ImapActionKind::kFetchDefaultMessage;
+    action.state = ImapActionState::kPending;
+    action.account_id = mailbox->account_id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
+    action.message_id = std::string(message_id);
+    action.remote_message_id = message->remote_id;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
 bool MailTransportCoordinator::QueueFetchFullMessage(std::string_view mailbox_id,
                                                      std::string_view message_id,
                                                      std::string* error_message) {
@@ -2983,6 +4007,67 @@ bool MailTransportCoordinator::QueueFetchFullMessage(std::string_view mailbox_id
     action.created_at = NowUnixSeconds();
     action.updated_at = action.created_at;
     return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::QueueRedownloadMessage(std::string_view mailbox_id,
+                                                      std::string_view message_id,
+                                                      bool full,
+                                                      std::string* error_message) {
+    if (!imap_action_store_) {
+        if (error_message) {
+            *error_message = "IMAP action store is unavailable.";
+        }
+        return false;
+    }
+    const auto mailbox = mailbox_store_.GetMailbox(mailbox_id);
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!mailbox || !message || mailbox->protocol != MailboxProtocol::kImap) {
+        if (error_message) {
+            *error_message = "IMAP message is unavailable.";
+        }
+        return false;
+    }
+    ImapActionRecord action;
+    action.id = GenerateId("imap-action");
+    action.kind = full ? ImapActionKind::kRedownloadFullMessage
+                       : ImapActionKind::kRedownloadDefaultMessage;
+    action.state = ImapActionState::kPending;
+    action.account_id = mailbox->account_id;
+    action.mailbox_id = std::string(mailbox_id);
+    action.remote_mailbox = mailbox->remote_name;
+    action.message_id = std::string(message_id);
+    action.remote_message_id = message->remote_id;
+    action.created_at = NowUnixSeconds();
+    action.updated_at = action.created_at;
+    return imap_action_store_->SaveAction(action, error_message);
+}
+
+bool MailTransportCoordinator::UpdateQueuedMessageTiming(std::string_view mailbox_id,
+                                                         std::string_view message_id,
+                                                         std::int64_t scheduled_send_at,
+                                                         std::string* error_message) {
+    const auto message = message_store_.GetMessage(mailbox_id, message_id);
+    if (!message) {
+        if (error_message) {
+            *error_message = "Queued message not found.";
+        }
+        return false;
+    }
+    if (message->mailbox_id != "out") {
+        if (error_message) {
+            *error_message = "Change Queueing is only available for Out messages.";
+        }
+        return false;
+    }
+
+    MessageRecord updated = *message;
+    updated.delivery_state = MessageDeliveryState::kQueued;
+    updated.legacy_status = scheduled_send_at > 0 ? LegacyMessageStatus::kTimeQueued
+                                                  : LegacyMessageStatus::kQueued;
+    updated.scheduled_send_at = scheduled_send_at;
+    updated.updated_at = NowUnixSeconds();
+    updated.last_error.clear();
+    return message_store_.SaveMessage(updated, error_message);
 }
 
 bool MailTransportCoordinator::RetryImapAction(std::string_view action_id, std::string* error_message) {

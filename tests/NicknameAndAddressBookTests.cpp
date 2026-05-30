@@ -14,7 +14,7 @@ HERMES_TEST(MemoryAddressBookServiceNormalizesEmailLookups) {
 }
 
 HERMES_TEST(FlatFileNicknameStoreRoundTripsEntries) {
-    hermes::tests::ScopedTempDirectory temp("hermes-nicknames");
+    hermes::tests::ScopedTempDirectory temp("hemera-nicknames");
     const std::filesystem::path path = temp.Path() / "nicknames.txt";
 
     hermes::FlatFileNicknameStore store;

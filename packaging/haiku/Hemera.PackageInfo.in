@@ -1,0 +1,19 @@
+name                  hemera
+version               @HEMERA_HAIKU_PACKAGE_VERSION@
+architecture          @CMAKE_SYSTEM_PROCESSOR@
+summary               "Hemera mail client"
+description           "Hemera is a Haiku-native mail client shell release candidate packaged by HERMES.
+This RC ships the Hemera app resources, toolbar icons, and package metadata while compose and
+Directory Services remain marked in-progress for live Haiku runtime-only validation."
+vendor                "HERMES"
+packager              "HERMES"
+copyrights            { "Copyright (C) 2026 HERMES" }
+licenses              { "MIT" }
+provides {
+    hemera = @HEMERA_HAIKU_PACKAGE_VERSION@
+    app:Hemera = @HEMERA_HAIKU_PACKAGE_VERSION@
+    cmd:Hemera = @HEMERA_HAIKU_PACKAGE_VERSION@
+}
+requires {
+    haiku
+}

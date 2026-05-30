@@ -15,6 +15,11 @@ enum class MailboxProtocol {
     kSmtp,
 };
 
+enum class MailboxKind {
+    kMailbox,
+    kFolder,
+};
+
 struct MailboxRecord {
     std::string id;
     std::string display_name;
@@ -25,6 +30,8 @@ struct MailboxRecord {
     bool is_remote = false;
     bool system_mailbox = false;
     std::size_t message_count = 0;
+    MailboxKind kind = MailboxKind::kMailbox;
+    std::string parent_id;
 };
 
 class MailboxStore {

@@ -1,0 +1,31 @@
+SUMMARY="Hemera mail client"
+DESCRIPTION="Hemera is the Haiku-native shell for the Hemera mail client release candidate."
+HOMEPAGE="https://example.invalid/hemera"
+COPYRIGHT="2026 HERMES"
+LICENSE="MIT"
+REVISION="1"
+SOURCE_URI="@HEMERA_SOURCE_URI@"
+CHECKSUM_SHA256="@HEMERA_SOURCE_SHA256@"
+ARCHITECTURES="?x86_64"
+
+PROVIDES="
+	hemera = $portVersion
+	app:Hemera = $portVersion
+	cmd:Hemera = $portVersion
+"
+REQUIRES="
+	haiku
+"
+
+BUILD()
+{
+	cmake -S . -B build -DHERMES_BUILD_HAIKU_SHELL=ON
+	cmake --build build --target Hemera
+}
+
+INSTALL()
+{
+	mkdir -p $appsDir/Hemera/icons
+	cp build/src/hermes_port/haiku/Hemera $appsDir/Hemera/
+	cp -R src/hermes_port/haiku/assets/icons/toolbar $appsDir/Hemera/icons/
+}

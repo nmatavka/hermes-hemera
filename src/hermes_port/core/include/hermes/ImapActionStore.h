@@ -12,13 +12,17 @@ namespace hermes {
 enum class ImapActionKind {
     kDelete,
     kUndelete,
+    kExpungeMailbox,
     kMove,
     kCopy,
     kCreateMailbox,
     kRenameMailbox,
     kDeleteMailbox,
     kFetchAttachment,
+    kFetchDefaultMessage,
     kFetchFullMessage,
+    kRedownloadDefaultMessage,
+    kRedownloadFullMessage,
     kResyncMailbox,
     kRefreshMailboxList,
 };

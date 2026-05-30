@@ -6,7 +6,7 @@
 #include "hermes/DraftStore.h"
 
 HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
-    hermes::tests::ScopedTempDirectory temp("hermes-drafts");
+    hermes::tests::ScopedTempDirectory temp("hemera-drafts");
     hermes::FilesystemDraftStore store(temp.Path());
 
     hermes::ComposeMessage draft;
@@ -30,6 +30,10 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
     draft.policy.word_wrap_max = 88;
     draft.body.plain_text = "Plain body";
     draft.body.html_fragment = "<p>Styled body</p>";
+    draft.body.rtf_fragment = "{\\rtf1\\ansi Styled body}";
+    draft.body.paige_native_bytes = "native-paige-body";
+    draft.body.styled_source = hermes::StyledDocumentSource::kHtml;
+    draft.body.fidelity = hermes::StyledDocumentFidelity::kLossless;
     draft.stationery_name = "FollowUp";
     draft.signature_name = "Standard";
     draft.managed_signature = {true, "Standard", 12, 8, "Signature"};
@@ -51,6 +55,10 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
     HERMES_CHECK_EQ(loaded->headers.cc, std::string("team@example.com"));
     HERMES_CHECK_EQ(loaded->body.plain_text, std::string("Plain body"));
     HERMES_CHECK_EQ(loaded->body.html_fragment, std::string("<p>Styled body</p>"));
+    HERMES_CHECK_EQ(loaded->body.rtf_fragment, std::string("{\\rtf1\\ansi Styled body}"));
+    HERMES_CHECK_EQ(loaded->body.paige_native_bytes, std::string("native-paige-body"));
+    HERMES_CHECK_EQ(loaded->body.styled_source, hermes::StyledDocumentSource::kHtml);
+    HERMES_CHECK_EQ(loaded->body.fidelity, hermes::StyledDocumentFidelity::kLossless);
     HERMES_CHECK_EQ(loaded->policy.default_stationery_name, std::string("FollowUp"));
     HERMES_CHECK(loaded->policy.boss_protector_warn_inside_domains);
     HERMES_CHECK_EQ(loaded->policy.boss_protector_inside_domains, std::string("corp.example"));
@@ -81,7 +89,7 @@ HERMES_TEST(FilesystemDraftStoreRoundTripsComposeMessages) {
 }
 
 HERMES_TEST(FilesystemDraftStoreRoundTripsAttachmentCopies) {
-    hermes::tests::ScopedTempDirectory temp("hermes-draft-attachments");
+    hermes::tests::ScopedTempDirectory temp("hemera-draft-attachments");
     hermes::FilesystemDraftStore store(temp.Path());
 
     const auto source_attachment = temp.Path() / "brief.txt";

@@ -22,12 +22,14 @@ enum class PopAuthMode {
     kKerberos,
     kAPOP,
     kRPA,
+    kOAuth2,
 };
 
 enum class ImapAuthMode {
     kPassword,
     kKerberos,
     kCramMd5,
+    kOAuth2,
 };
 
 enum class SmtpAuthMode {
@@ -35,12 +37,25 @@ enum class SmtpAuthMode {
     kCramMd5,
     kLogin,
     kPlain,
+    kOAuth2,
 };
 
 enum class ImapDownloadMode {
     kMinimalHeaders,
     kMessageBody,
     kFullMessage,
+};
+
+enum class OAuthProviderKind {
+    kNone,
+    kMicrosoft365,
+    kGoogle,
+    kCustom,
+};
+
+enum class OAuthAuthMechanism {
+    kXOAUTH2,
+    kOAUTHBEARER,
 };
 
 struct KerberosSettings {
@@ -50,11 +65,23 @@ struct KerberosSettings {
     std::uint16_t pop_port = 110;
 };
 
+struct OAuthSettings {
+    OAuthProviderKind provider_kind = OAuthProviderKind::kNone;
+    std::string device_authorization_endpoint;
+    std::string token_endpoint;
+    OAuthAuthMechanism auth_mechanism = OAuthAuthMechanism::kXOAUTH2;
+    std::string client_id;
+    std::string tenant_or_domain;
+    std::vector<std::string> scopes;
+    bool client_secret_required = false;
+};
+
 struct AccountProfile {
     std::string id;
     std::string display_name;
     std::string email_address;
     std::string login_name;
+    std::string reply_to_address;
     std::string incoming_server;
     std::string outgoing_server;
     std::uint16_t incoming_port = 0;
@@ -80,6 +107,7 @@ struct AccountProfile {
     std::string imap_directory_prefix;
     std::string trash_mailbox_name;
     KerberosSettings kerberos;
+    OAuthSettings oauth;
 };
 
 class AccountService {

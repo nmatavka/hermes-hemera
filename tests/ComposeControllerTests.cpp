@@ -139,6 +139,7 @@ HERMES_TEST(ComposeControllerRoutesSpellMoodBossProtectorAndSendValidation) {
     message.headers.subject = "teh flame update";
     message.body.plain_text = "This body has a mispell and another flame marker.";
     message.body.html_fragment = "<p>This body has a mispell and another flame marker.</p>";
+    message.body.styled_source = hermes::StyledDocumentSource::kHtml;
     message.policy.warn_on_styled_send = true;
     message.policy.send_plain_and_styled = true;
     message.policy.boss_protector_additional_warn_dialog = true;
@@ -205,7 +206,7 @@ HERMES_TEST(ComposeControllerReplacesAndDetachesManagedSignatures) {
 }
 
 HERMES_TEST(ComposeControllerAddsAndRemovesAttachments) {
-    hermes::tests::ScopedTempDirectory temp("hermes-compose-attachments");
+    hermes::tests::ScopedTempDirectory temp("hemera-compose-attachments");
     const auto source_attachment = temp.Path() / "brief.txt";
     {
         std::ofstream output(source_attachment);

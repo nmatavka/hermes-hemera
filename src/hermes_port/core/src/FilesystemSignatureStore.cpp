@@ -1,4 +1,5 @@
 #include "hermes/SignatureStore.h"
+#include "hermes/RichTextFormat.h"
 
 #include <algorithm>
 #include <cctype>
@@ -30,10 +31,11 @@ bool LooksLikeHtml(const std::filesystem::path& path, std::string_view body) {
     if (extension == ".html" || extension == ".htm") {
         return true;
     }
+    return LooksLikeHtmlDocument(body);
+}
 
-    const std::string lowered = NormalizeValue(body);
-    return lowered.find("<html") != std::string::npos || lowered.find("<body") != std::string::npos ||
-           lowered.find("<p>") != std::string::npos || lowered.find("<div") != std::string::npos;
+bool LooksLikeRtf(const std::filesystem::path& path, std::string_view body) {
+    return NormalizeValue(path.extension().string()) == ".rtf" || LooksLikeRtfDocument(body);
 }
 
 std::string ReadWholeFile(const std::filesystem::path& path, std::string* error_message) {
@@ -61,26 +63,55 @@ bool WriteWholeFile(const std::filesystem::path& path,
     return static_cast<bool>(output);
 }
 
-std::string StripTags(std::string_view html) {
-    std::string result;
-    result.reserve(html.size());
+std::filesystem::path SidecarDirectory(const std::filesystem::path& visible_path) {
+    return std::filesystem::path(visible_path.string() + ".hermes");
+}
 
-    bool inside_tag = false;
-    for (char ch : html) {
-        if (ch == '<') {
-            inside_tag = true;
-            continue;
-        }
-        if (ch == '>') {
-            inside_tag = false;
-            continue;
-        }
-        if (!inside_tag) {
-            result.push_back(ch);
-        }
+std::filesystem::path SidecarFile(const std::filesystem::path& visible_path, const char* name) {
+    return SidecarDirectory(visible_path) / name;
+}
+
+void RemoveSidecar(const std::filesystem::path& visible_path) {
+    std::error_code ignored;
+    std::filesystem::remove_all(SidecarDirectory(visible_path), ignored);
+}
+
+std::filesystem::path VisiblePathFor(const std::filesystem::path& root,
+                                     const SignatureTemplate& signature,
+                                     const std::optional<SignatureTemplate>& existing) {
+    if (existing) {
+        return existing->source_path;
     }
+    if (!signature.source_path.empty() && signature.source_path.parent_path() == root) {
+        return signature.source_path;
+    }
+    const std::string extension =
+        signature.body.styled_source == StyledDocumentSource::kRtf  ? ".rtf"
+        : signature.body.styled_source == StyledDocumentSource::kHtml ? ".html"
+                                                                     : ".sig";
+    return root / (signature.name + extension);
+}
 
-    return result;
+bool WriteSidecar(const std::filesystem::path& visible_path,
+                  const RichTextDocument& body,
+                  std::string* error_message) {
+    const auto sidecar = SidecarDirectory(visible_path);
+    std::error_code create_error;
+    std::filesystem::create_directories(sidecar, create_error);
+    if (create_error) {
+        if (error_message) {
+            *error_message = "Unable to create signature sidecar: " + create_error.message();
+        }
+        return false;
+    }
+    if (!WriteWholeFile(SidecarFile(visible_path, "source.txt"), ToString(body.styled_source), error_message) ||
+        !WriteWholeFile(SidecarFile(visible_path, "fidelity.txt"), ToString(body.fidelity), error_message) ||
+        !WriteWholeFile(SidecarFile(visible_path, "body.html"), body.html_fragment, error_message) ||
+        !WriteWholeFile(SidecarFile(visible_path, "body.rtf"), body.rtf_fragment, error_message) ||
+        !WriteWholeFile(SidecarFile(visible_path, "body.pg"), body.paige_native_bytes, error_message)) {
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -109,7 +140,8 @@ bool FilesystemSignatureStore::Discover(const std::filesystem::path& directory, 
         }
 
         const std::string extension = Normalize(entry.path().extension().string());
-        if (extension != ".sig" && extension != ".txt" && extension != ".html" && extension != ".htm") {
+        if (extension != ".sig" && extension != ".txt" && extension != ".html" && extension != ".htm" &&
+            extension != ".rtf") {
             continue;
         }
 
@@ -163,19 +195,21 @@ bool FilesystemSignatureStore::SaveTemplate(const SignatureTemplate& signature, 
     }
 
     SignatureTemplate updated = signature;
-    if (updated.body.plain_text.empty() && !updated.body.html_fragment.empty()) {
-        updated.body.plain_text = StripTags(updated.body.html_fragment);
-    }
-
-    const bool html = !updated.body.html_fragment.empty();
-    const auto path = root_directory_ / (updated.name + (html ? ".html" : ".sig"));
+    updated.body = PrepareRichTextDocumentForPersistence(signature.body);
     const auto old = Find(updated.name);
+    const auto path = VisiblePathFor(root_directory_, updated, old);
     if (old && old->source_path != path) {
         std::error_code remove_error;
         std::filesystem::remove(old->source_path, remove_error);
+        RemoveSidecar(old->source_path);
     }
 
-    if (!WriteWholeFile(path, html ? updated.body.html_fragment : updated.body.plain_text, error_message)) {
+    const std::string extension = Normalize(path.extension().string());
+    const std::string visible_body =
+        extension == ".html" || extension == ".htm" ? updated.body.html_fragment
+        : extension == ".rtf"                        ? updated.body.rtf_fragment
+                                                      : updated.body.plain_text;
+    if (!WriteWholeFile(path, visible_body, error_message) || !WriteSidecar(path, updated.body, error_message)) {
         return false;
     }
     return Discover(root_directory_, error_message);
@@ -197,6 +231,7 @@ bool FilesystemSignatureStore::DeleteTemplate(std::string_view name, std::string
         }
         return false;
     }
+    RemoveSidecar(existing->source_path);
     return Discover(root_directory_, error_message);
 }
 
@@ -213,10 +248,34 @@ std::optional<SignatureTemplate> FilesystemSignatureStore::ParseTemplate(const s
 
     if (LooksLikeHtml(path, contents)) {
         result.body.html_fragment = contents;
-        result.body.plain_text = StripTags(contents);
+        result.body.plain_text = StripHtml(contents);
+        result.body.styled_source = StyledDocumentSource::kHtml;
+    } else if (LooksLikeRtf(path, contents)) {
+        result.body.rtf_fragment = contents;
+        result.body.plain_text = StripRtf(contents);
+        result.body.styled_source = StyledDocumentSource::kRtf;
     } else {
         result.body.plain_text = contents;
     }
+    result.body.fidelity = ClassifyStyledDocument(result.body);
+
+    const auto source_path = SidecarFile(path, "source.txt");
+    if (const std::string source = ReadWholeFile(source_path, nullptr); !source.empty()) {
+        result.body.styled_source = ParseStyledDocumentSource(source);
+    }
+    if (const std::string fidelity = ReadWholeFile(SidecarFile(path, "fidelity.txt"), nullptr); !fidelity.empty()) {
+        result.body.fidelity = ParseStyledDocumentFidelity(fidelity);
+    }
+    if (const std::string html = ReadWholeFile(SidecarFile(path, "body.html"), nullptr); !html.empty()) {
+        result.body.html_fragment = html;
+    }
+    if (const std::string rtf = ReadWholeFile(SidecarFile(path, "body.rtf"), nullptr); !rtf.empty()) {
+        result.body.rtf_fragment = rtf;
+    }
+    if (const std::string native = ReadWholeFile(SidecarFile(path, "body.pg"), nullptr); !native.empty()) {
+        result.body.paige_native_bytes = native;
+    }
+    result.body = NormalizeRichTextDocument(result.body);
 
     return result;
 }

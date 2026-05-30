@@ -227,6 +227,45 @@ elseif(HERMES_KRB5_INCLUDE_DIR AND HERMES_GSSAPI_INCLUDE_DIR AND HERMES_GSS_FRAM
     )
 endif()
 
+set(HERMES_HAS_HAIKU_WEBKIT 0)
+if(HERMES_BUILD_HAIKU_SHELL AND HERMES_IS_HAIKU)
+    find_path(
+        HERMES_HAIKU_WEBKIT_INCLUDE_ROOT
+        NAMES WebKitLegacy/haiku/API/WebView.h
+        HINTS
+            /boot/system/develop/headers
+            /boot/home/config/develop/headers
+    )
+    find_library(
+        HERMES_HAIKU_WEBKIT_LEGACY_LIBRARY
+        NAMES WebKitLegacy
+        HINTS
+            /boot/system/lib
+            /boot/home/config/lib
+    )
+
+    if(HERMES_HAIKU_WEBKIT_INCLUDE_ROOT AND HERMES_HAIKU_WEBKIT_LEGACY_LIBRARY)
+        add_library(hermes_haiku_webkit_legacy INTERFACE)
+        add_library(hermes::haiku_webkit_legacy ALIAS hermes_haiku_webkit_legacy)
+        target_include_directories(
+            hermes_haiku_webkit_legacy
+            INTERFACE
+                "${HERMES_HAIKU_WEBKIT_INCLUDE_ROOT}"
+                "${HERMES_HAIKU_WEBKIT_INCLUDE_ROOT}/WebKitLegacy/haiku/API"
+        )
+        target_link_libraries(
+            hermes_haiku_webkit_legacy
+            INTERFACE
+                "${HERMES_HAIKU_WEBKIT_LEGACY_LIBRARY}"
+        )
+        set(HERMES_HAS_HAIKU_WEBKIT 1)
+    else()
+        message(FATAL_ERROR
+            "HERMES_BUILD_HAIKU_SHELL requires the Haiku WebKitLegacy system package. "
+            "Missing WebKitLegacy headers or library.")
+    endif()
+endif()
+
 target_compile_definitions(
     hermes_port_dependencies
     INTERFACE
@@ -235,9 +274,10 @@ target_compile_definitions(
         HERMES_HAS_OPENSSL=${HERMES_HAS_OPENSSL}
         HERMES_HAS_HUNSPELL=${HERMES_HAS_HUNSPELL}
         HERMES_HAS_KRB5=${HERMES_HAS_KRB5}
+        HERMES_HAS_HAIKU_WEBKIT=${HERMES_HAS_HAIKU_WEBKIT}
         HERMES_KRB5_HEADERS_FROM_ROOT=${HERMES_KRB5_HEADERS_FROM_ROOT}
         HERMES_GSSAPI_LIBRARY_FROM_ROOT=${HERMES_GSSAPI_LIBRARY_FROM_ROOT}
         HERMES_KRB5_LIBRARY_FROM_ROOT=${HERMES_KRB5_LIBRARY_FROM_ROOT}
 )
 
-message(STATUS "Hermes Haiku Port: HAIKU=${HERMES_IS_HAIKU} PAIGE=${HERMES_HAS_PAIGE} OPENSSL=${HERMES_HAS_OPENSSL} HUNSPELL=${HERMES_HAS_HUNSPELL} KRB5=${HERMES_HAS_KRB5}")
+message(STATUS "Hemera Haiku Port: HAIKU=${HERMES_IS_HAIKU} PAIGE=${HERMES_HAS_PAIGE} OPENSSL=${HERMES_HAS_OPENSSL} HUNSPELL=${HERMES_HAS_HUNSPELL} KRB5=${HERMES_HAS_KRB5} WEBKIT=${HERMES_HAS_HAIKU_WEBKIT}")

@@ -1,14 +1,16 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <View.h>
 
+#include "ComposeEditorHost.h"
 #include "hermes/PaigeRichTextSurface.h"
 
-namespace hermes::haiku_port {
+namespace hemera::haiku {
 
 class PaigeEditorView final : public BView {
 public:
@@ -16,6 +18,8 @@ public:
     ~PaigeEditorView() override;
 
     void SetChangeCallback(std::function<void()> callback);
+    void SetSelectionChangeCallback(std::function<void()> callback);
+    void SetTabNavigationCallback(std::function<bool(bool shift)> callback);
     void ReloadFromSurface();
     void ScrollSelectionIntoView();
     bool SelectAllText();
@@ -59,6 +63,8 @@ private:
 
     hermes::PaigeRichTextSurface& surface_;
     std::function<void()> change_callback_;
+    std::function<void()> selection_change_callback_;
+    std::function<bool(bool shift)> tab_navigation_callback_;
     bool dragging_selection_ = false;
     std::size_t drag_anchor_ = 0;
     float line_height_ = 18.0f;
@@ -66,4 +72,6 @@ private:
     float inset_ = 8.0f;
 };
 
-}  // namespace hermes::haiku_port
+std::unique_ptr<ComposeEditorHost> CreatePaigeEditorHost(hermes::PaigeRichTextSurface& surface);
+
+}  // namespace hemera::haiku

@@ -4,7 +4,7 @@
 #include "hermes/ImapActionStore.h"
 
 HERMES_TEST(FilesystemImapActionStoreRoundTripsPendingAction) {
-    hermes::tests::ScopedTempDirectory temp("hermes-imap-actions");
+    hermes::tests::ScopedTempDirectory temp("hemera-imap-actions");
     hermes::FilesystemImapActionStore store(temp.Path());
 
     hermes::ImapActionRecord action;
@@ -32,4 +32,27 @@ HERMES_TEST(FilesystemImapActionStoreRoundTripsPendingAction) {
 
     const auto listed = store.ListActions();
     HERMES_CHECK_EQ(listed.size(), static_cast<std::size_t>(1));
+}
+
+HERMES_TEST(FilesystemImapActionStoreRoundTripsMailboxExpungeAction) {
+    hermes::tests::ScopedTempDirectory temp("hemera-imap-expunge-actions");
+    hermes::FilesystemImapActionStore store(temp.Path());
+
+    hermes::ImapActionRecord action;
+    action.id = "imap-expunge-1";
+    action.kind = hermes::ImapActionKind::kExpungeMailbox;
+    action.state = hermes::ImapActionState::kPending;
+    action.account_id = "primary";
+    action.mailbox_id = "primary:INBOX";
+    action.remote_mailbox = "INBOX";
+    action.created_at = 250;
+    action.updated_at = 250;
+
+    std::string error_message;
+    HERMES_CHECK(store.SaveAction(action, &error_message));
+
+    const auto loaded = store.GetAction("imap-expunge-1");
+    HERMES_CHECK(static_cast<bool>(loaded));
+    HERMES_CHECK_EQ(loaded->kind, hermes::ImapActionKind::kExpungeMailbox);
+    HERMES_CHECK_EQ(loaded->remote_mailbox, std::string("INBOX"));
 }

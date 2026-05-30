@@ -7,7 +7,7 @@
 
 HERMES_TEST(IniSettingsStoreLoadsLegacyStyleValues) {
     const std::filesystem::path temp_path =
-        std::filesystem::temp_directory_path() / "hermes-hemera-settings.ini";
+        std::filesystem::temp_directory_path() / "hemera-settings.ini";
 
     std::ofstream output(temp_path);
     output << "[Settings]\n";
@@ -24,7 +24,7 @@ HERMES_TEST(IniSettingsStoreLoadsLegacyStyleValues) {
 
 HERMES_TEST(IniSettingsStoreSavesRoundTripValues) {
     const std::filesystem::path temp_path =
-        std::filesystem::temp_directory_path() / "hermes-hemera-roundtrip.ini";
+        std::filesystem::temp_directory_path() / "hemera-roundtrip.ini";
 
     hermes::IniSettingsStore store;
     store.SetString("Filters", "Enabled", "1");

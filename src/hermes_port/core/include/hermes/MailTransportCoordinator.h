@@ -9,9 +9,11 @@
 #include "hermes/AccountService.h"
 #include "hermes/CredentialStore.h"
 #include "hermes/ImapActionStore.h"
+#include "hermes/MailTransferSettings.h"
 #include "hermes/MailTaskModel.h"
 #include "hermes/MailboxStore.h"
 #include "hermes/MessageStore.h"
+#include "hermes/OAuthSupport.h"
 #include "hermes/SyncStateStore.h"
 #include "hermes/TlsProvider.h"
 #include "hermes/TransportService.h"
@@ -39,12 +41,15 @@ public:
                              TransportService& transport_service,
                              TlsProvider& tls_provider,
                              MailTaskModel& task_model,
+                             OAuthDeviceFlowService* oauth_device_flow_service = nullptr,
+                             OAuthTokenStore* oauth_token_store = nullptr,
                              ImapActionStore* imap_action_store = nullptr,
                              const GssapiEngine* gssapi_engine = nullptr);
 
     MailTransportSummary SendQueued();
     MailTransportSummary CheckMail();
     MailTransportSummary SendAndReceive();
+    MailTransportSummary ExecuteMailTransfer(const MailTransferRequest& request);
     MailTransportSummary RefreshMailbox(std::string_view mailbox_id, bool full_resync);
     bool QueueDeleteMessage(std::string_view mailbox_id,
                             std::string_view message_id,
@@ -52,6 +57,7 @@ public:
     bool QueueUndeleteMessage(std::string_view mailbox_id,
                               std::string_view message_id,
                               std::string* error_message = nullptr);
+    bool QueueExpungeMailbox(std::string_view mailbox_id, std::string* error_message = nullptr);
     bool QueueMoveMessage(std::string_view mailbox_id,
                           std::string_view message_id,
                           std::string_view destination_mailbox_id,
@@ -71,14 +77,28 @@ public:
                               std::string_view message_id,
                               std::size_t attachment_index,
                               std::string* error_message = nullptr);
+    bool QueueFetchDefaultMessage(std::string_view mailbox_id,
+                                  std::string_view message_id,
+                                  std::string* error_message = nullptr);
     bool QueueFetchFullMessage(std::string_view mailbox_id,
                                std::string_view message_id,
                                std::string* error_message = nullptr);
+    bool QueueRedownloadMessage(std::string_view mailbox_id,
+                                std::string_view message_id,
+                                bool full,
+                                std::string* error_message = nullptr);
+    bool UpdateQueuedMessageTiming(std::string_view mailbox_id,
+                                   std::string_view message_id,
+                                   std::int64_t scheduled_send_at,
+                                   std::string* error_message = nullptr);
     bool RetryImapAction(std::string_view action_id, std::string* error_message = nullptr);
     bool CancelImapAction(std::string_view action_id, std::string* error_message = nullptr);
     bool StopActiveTasks();
 
 private:
+    MailTransportSummary SendQueuedInternal(const std::vector<std::string>* account_filter);
+    MailTransportSummary CheckMailInternal(const MailTransferRequest* request);
+
     AccountService& account_service_;
     CredentialStore& credential_store_;
     SyncStateStore& sync_state_store_;
@@ -87,6 +107,8 @@ private:
     TransportService& transport_service_;
     TlsProvider& tls_provider_;
     MailTaskModel& task_model_;
+    OAuthDeviceFlowService* oauth_device_flow_service_ = nullptr;
+    OAuthTokenStore* oauth_token_store_ = nullptr;
     ImapActionStore* imap_action_store_ = nullptr;
     const GssapiEngine* gssapi_engine_ = nullptr;
     std::atomic<bool> stop_requested_{false};

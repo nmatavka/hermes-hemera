@@ -1,9 +1,13 @@
 #include "hermes/PaigeRichTextSurface.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <cstring>
 
 #if HERMES_ENABLE_NATIVE_PAIGE && HERMES_HAS_PAIGE
+#include <fcntl.h>
+#include <unistd.h>
 #include "Paige.h"
 #endif
 
@@ -18,39 +22,6 @@ std::string CopySelectedTextFromDocument(const RichTextDocument& document, const
 
     const std::size_t max_length = document.plain_text.size() - selection.start;
     return document.plain_text.substr(selection.start, std::min(selection.length, max_length));
-}
-
-std::string EscapeHtml(std::string_view text) {
-    std::string escaped;
-    escaped.reserve(text.size() + 32);
-
-    for (char ch : text) {
-        switch (ch) {
-            case '&':
-                escaped += "&amp;";
-                break;
-            case '<':
-                escaped += "&lt;";
-                break;
-            case '>':
-                escaped += "&gt;";
-                break;
-            case '"':
-                escaped += "&quot;";
-                break;
-            case '\'':
-                escaped += "&#39;";
-                break;
-            case '\n':
-                escaped += "<br/>\n";
-                break;
-            default:
-                escaped.push_back(ch);
-                break;
-        }
-    }
-
-    return escaped;
 }
 
 #if HERMES_ENABLE_NATIVE_PAIGE && HERMES_HAS_PAIGE
@@ -82,6 +53,31 @@ std::string ExtractNativeText(pg_ref document) {
     DisposeMemory(text_ref_handle);
     return text;
 }
+
+std::filesystem::path TempPath(std::string_view extension) {
+    static std::uint64_t counter = 0;
+    const auto base = std::filesystem::temp_directory_path() /
+                      ("hermes-paige-" + std::to_string(++counter) + "." +
+                       std::string(extension));
+    return base;
+}
+
+bool WriteTempFile(const std::filesystem::path& path, std::string_view contents) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) {
+        return false;
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    return static_cast<bool>(output);
+}
+
+std::string ReadTempFile(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        return {};
+    }
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
 #endif
 
 }  // namespace
@@ -93,8 +89,10 @@ PaigeRichTextSurface::~PaigeRichTextSurface() {
 }
 
 bool PaigeRichTextSurface::Load(const RichTextDocument& document) {
-    document_ = document;
-    styled_shadow_html_ = document.html_fragment;
+    document_ = NormalizeRichTextDocument(document);
+    if (RequiresHtmlSurface(document_)) {
+        document_.read_only = true;
+    }
     selection_ = {};
     undo_stack_.clear();
     redo_stack_.clear();
@@ -192,7 +190,6 @@ bool PaigeRichTextSurface::ReplaceSelection(std::string_view replacement) {
                        0,
                        FALSE);
         document_ = NativeSnapshot();
-        SyncStyledBody();
         return true;
 #endif
     }
@@ -218,7 +215,6 @@ bool PaigeRichTextSurface::Undo() {
     document_ = undo_stack_.back();
     undo_stack_.pop_back();
     selection_ = {};
-    styled_shadow_html_ = document_.html_fragment;
     if (NativeBackendEnabled() && native_document_ != 0) {
         (void)LoadNativeDocument(document_);
     }
@@ -234,7 +230,6 @@ bool PaigeRichTextSurface::Redo() {
     document_ = redo_stack_.back();
     redo_stack_.pop_back();
     selection_ = {};
-    styled_shadow_html_ = document_.html_fragment;
     if (NativeBackendEnabled() && native_document_ != 0) {
         (void)LoadNativeDocument(document_);
     }
@@ -265,6 +260,10 @@ std::string PaigeRichTextSurface::CutSelection() {
     }
 
     clipboard_ = CopySelectedText();
+    clipboard_document_ = {};
+    clipboard_document_.plain_text = clipboard_;
+    clipboard_document_.html_fragment = PlainTextToHtml(clipboard_);
+    clipboard_document_.rtf_fragment = PlainTextToRtf(clipboard_);
     if (!clipboard_.empty()) {
         (void)ReplaceSelection("");
     }
@@ -277,6 +276,12 @@ bool PaigeRichTextSurface::Paste(std::string_view text) {
         return false;
     }
     clipboard_ = replacement;
+    if (!text.empty()) {
+        clipboard_document_ = {};
+        clipboard_document_.plain_text = replacement;
+        clipboard_document_.html_fragment = PlainTextToHtml(replacement);
+        clipboard_document_.rtf_fragment = PlainTextToRtf(replacement);
+    }
     return ReplaceSelection(replacement);
 }
 
@@ -458,10 +463,32 @@ void PaigeRichTextSurface::ReleaseNativeDocument() {
 RichTextDocument PaigeRichTextSurface::NativeSnapshot() const {
     RichTextDocument snapshot = document_;
 #if HERMES_ENABLE_NATIVE_PAIGE && HERMES_HAS_PAIGE
+    if (native_document_ == 0) {
+        return snapshot;
+    }
     snapshot.plain_text = ExtractNativeText(static_cast<pg_ref>(native_document_));
+    auto export_document = [&](pg_filetype file_type, std::string_view extension) -> std::string {
+        const auto path = TempPath(extension);
+        const int fd = ::open(path.c_str(), O_CREAT | O_TRUNC | O_RDWR, 0600);
+        if (fd < 0) {
+            return {};
+        }
+        const pg_error error =
+            pgExportFileFromC(static_cast<pg_ref>(native_document_), file_type, EXPORT_EVERYTHING_FLAG, 0, nullptr, FALSE, fd);
+        ::close(fd);
+        const std::string exported = error == NO_ERROR ? ReadTempFile(path) : std::string();
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+        return exported;
+    };
+    snapshot.paige_native_bytes = export_document(pg_paige_type, "pg");
+    snapshot.html_fragment = export_document(pg_html_type, "html");
+    snapshot.rtf_fragment = export_document(pg_rtf_type, "rtf");
+    snapshot.styled_source =
+        !snapshot.paige_native_bytes.empty() ? StyledDocumentSource::kPaigeNative : BestAvailableSource(snapshot);
+    snapshot.fidelity = ClassifyStyledDocument(snapshot);
 #endif
-    snapshot.html_fragment = styled_shadow_html_;
-    return snapshot;
+    return NormalizeRichTextDocument(snapshot);
 }
 
 bool PaigeRichTextSurface::LoadNativeDocument(const RichTextDocument& document) {
@@ -478,15 +505,46 @@ bool PaigeRichTextSurface::LoadNativeDocument(const RichTextDocument& document) 
         pgDelete(native_ref, &selection, draw_none);
     }
 
-    if (!document.plain_text.empty()) {
+    const RichTextDocument normalized = NormalizeRichTextDocument(document);
+    auto import_document = [&](pg_filetype file_type, std::string_view extension, const std::string& contents) -> bool {
+        if (contents.empty()) {
+            return false;
+        }
+        const auto path = TempPath(extension);
+        if (!WriteTempFile(path, contents)) {
+            return false;
+        }
+        const int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+            return false;
+        }
+        const long import_flags = IMPORT_EVERYTHING_FLAG | IMPORT_BKCOLOR_FLAG | IMPORT_HYPERTEXT_FLAG | IMPORT_TABLES_FLAG;
+        const pg_error error = pgImportFileFromC(native_ref, file_type, import_flags, 0, fd);
+        ::close(fd);
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+        return error == NO_ERROR;
+    };
+
+    const bool imported =
+        (!normalized.paige_native_bytes.empty() &&
+         import_document(pg_paige_type, "pg", normalized.paige_native_bytes)) ||
+        (!RequiresHtmlSurface(normalized) && !normalized.html_fragment.empty() &&
+         import_document(pg_html_type, "html", normalized.html_fragment)) ||
+        (!RequiresHtmlSurface(normalized) && !normalized.rtf_fragment.empty() &&
+         import_document(pg_rtf_type, "rtf", normalized.rtf_fragment));
+
+    if (!imported && !normalized.plain_text.empty()) {
         auto* bytes = const_cast<pg_char_ptr>(
-            reinterpret_cast<const pg_char_ptr>(document.plain_text.data()));
-        pgInsert(native_ref, bytes, document.plain_text.size(), 0, data_insert_mode, 0, draw_none);
+            reinterpret_cast<const pg_char_ptr>(normalized.plain_text.data()));
+        pgInsert(native_ref, bytes, normalized.plain_text.size(), 0, data_insert_mode, 0, draw_none);
     }
 
     const long attributes = pgGetAttributes(native_ref);
     pgSetAttributes(native_ref,
-                    document.read_only ? (attributes | NO_EDIT_BIT) : (attributes & ~NO_EDIT_BIT));
+                    normalized.read_only ? (attributes | NO_EDIT_BIT) : (attributes & ~NO_EDIT_BIT));
     pgSetSelection(native_ref, 0, 0, 0, FALSE);
     ResizeNativeHost(native_width_, native_height_);
     return true;
@@ -520,12 +578,21 @@ std::string PaigeRichTextSurface::CopySelectedText() const {
 }
 
 void PaigeRichTextSurface::SyncStyledBody() {
-    if (styled_shadow_html_.empty()) {
-        return;
+    const bool had_structured_content = HasAuthenticStyledContent(document_);
+    document_.paige_native_bytes.clear();
+    if (had_structured_content) {
+        document_.html_fragment = PlainTextToHtml(document_.plain_text);
+        document_.rtf_fragment = PlainTextToRtf(document_.plain_text);
+        if (document_.styled_source == StyledDocumentSource::kPaigeNative) {
+            document_.styled_source = StyledDocumentSource::kHtml;
+        }
+        document_.fidelity = StyledDocumentFidelity::kLossy;
+    } else {
+        document_.html_fragment.clear();
+        document_.rtf_fragment.clear();
+        document_.styled_source = StyledDocumentSource::kPlainText;
+        document_.fidelity = StyledDocumentFidelity::kLossless;
     }
-
-    styled_shadow_html_ = "<div>" + EscapeHtml(Snapshot().plain_text) + "</div>";
-    document_.html_fragment = styled_shadow_html_;
 }
 
 }  // namespace hermes

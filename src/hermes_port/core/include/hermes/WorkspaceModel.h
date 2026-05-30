@@ -6,6 +6,10 @@
 #include <string_view>
 #include <vector>
 
+#include "hermes/LegacyMessageStatus.h"
+#include "hermes/PopServerStatus.h"
+#include "hermes/RichTextSurface.h"
+
 namespace hermes {
 
 struct MailboxSummary {
@@ -29,6 +33,11 @@ struct MessageSummary {
     std::size_t attachment_count = 0;
     std::string status;
     std::string priority;
+    LegacyMessageStatus legacy_status = LegacyMessageStatus::kUnread;
+    int label_index = 0;
+    int junk_score = 0;
+    bool manually_junked = false;
+    PopServerStatus pop_server_status = PopServerStatus::kNone;
     bool attachments_omitted = false;
     bool download_complete = true;
     std::size_t size = 0;
@@ -42,6 +51,8 @@ struct AttachmentSummary {
     bool omitted = false;
     bool download_complete = true;
     std::string fetch_error;
+    std::string content_id;
+    std::string disposition;
 };
 
 struct MessageDetail {
@@ -52,12 +63,22 @@ struct MessageDetail {
     std::string recipients;
     std::string preview;
     std::string plain_text_body;
+    std::string html_body;
+    std::string rtf_body;
+    std::string paige_native_body;
+    StyledDocumentSource styled_source = StyledDocumentSource::kPlainText;
+    StyledDocumentFidelity styled_fidelity = StyledDocumentFidelity::kLossless;
     bool unread = true;
     bool download_complete = true;
     bool attachments_omitted = false;
     bool flagged = false;
     bool deleted = false;
     bool answered = false;
+    LegacyMessageStatus legacy_status = LegacyMessageStatus::kUnread;
+    int label_index = 0;
+    int junk_score = 0;
+    bool manually_junked = false;
+    PopServerStatus pop_server_status = PopServerStatus::kNone;
     std::string last_error;
     std::vector<AttachmentSummary> attachments;
 };

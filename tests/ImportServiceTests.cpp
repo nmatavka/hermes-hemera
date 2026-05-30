@@ -25,7 +25,7 @@ HERMES_TEST(LegacyImportServiceDiscoversTrackedLegacyArtifacts) {
 
 HERMES_TEST(LegacyImportServiceCopiesArtifactsIntoTrackedLayout) {
     hermes::LegacyImportService service;
-    hermes::tests::ScopedTempDirectory temp("hermes-import");
+    hermes::tests::ScopedTempDirectory temp("hemera-import");
 
     std::string error_message;
     HERMES_CHECK(service.Import(hermes::tests::FixtureRoot(), temp.Path(), &error_message));

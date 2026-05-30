@@ -1,4 +1,4 @@
-# Hermes Hemera Haiku Port
+# Hemera Haiku Port
 
 This repository root now contains the new Haiku-port scaffolding and build system.
 The original Windows/MFC/Stingray-era source drop has been moved to

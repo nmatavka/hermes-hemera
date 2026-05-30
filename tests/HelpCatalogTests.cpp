@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "TestPaths.h"
 #include "TestRegistry.h"
 
@@ -25,4 +27,21 @@ HERMES_TEST(LegacyHelpCatalogParsesDefineStyleTopicMaps) {
 
     const auto topic = catalog.FindById("Include_signature_on_reply");
     HERMES_CHECK(static_cast<bool>(topic));
+}
+
+HERMES_TEST(LegacyHelpCatalogParsesContentsHierarchy) {
+    hermes::LegacyHelpCatalog catalog;
+    std::string error_message;
+    HERMES_CHECK(catalog.LoadContents(
+        hermes::tests::FixtureRoot() / "help" / "Eudora.cnt",
+        &error_message));
+
+    const auto contents = catalog.Contents();
+    HERMES_CHECK(contents.size() > 50);
+    const auto it = std::find_if(contents.begin(), contents.end(), [](const hermes::HelpContentsEntry& entry) {
+        return entry.label == "Configuring Eudora";
+    });
+    HERMES_CHECK(it != contents.end());
+    HERMES_CHECK_EQ(it->level, 3);
+    HERMES_CHECK_EQ(it->topic_id, std::string("Configuring_Eudora"));
 }

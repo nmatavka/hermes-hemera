@@ -7,11 +7,14 @@
 #include <string>
 #include <string_view>
 
+#include "hermes/PopServerStatus.h"
+
 namespace hermes {
 
 struct PopSyncState {
     std::string account_id;
     std::map<std::string, std::string> uidl_to_message_id;
+    std::map<std::string, PopServerStatus> uidl_to_server_status;
 };
 
 struct ImapMailboxSyncState {
@@ -19,6 +22,8 @@ struct ImapMailboxSyncState {
     std::string mailbox_id;
     std::uint64_t uid_validity = 0;
     std::uint64_t last_seen_uid = 0;
+    bool auto_sync = true;
+    bool show_deleted = false;
 };
 
 class SyncStateStore {

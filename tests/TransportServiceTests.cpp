@@ -56,7 +56,7 @@ HERMES_TEST(SocketTransportServiceConnectsToLocalPlaintextServer) {
         if (client >= 0) {
             char buffer[64];
             (void)::recv(client, buffer, sizeof(buffer), 0);
-            const char response[] = "+OK Hermes test server\r\n";
+            const char response[] = "+OK Hemera test server\r\n";
             (void)::send(client, response, sizeof(response) - 1, 0);
             ::close(client);
         }
@@ -71,7 +71,7 @@ HERMES_TEST(SocketTransportServiceConnectsToLocalPlaintextServer) {
     HERMES_CHECK(connection->Send("NOOP\r\n", &error_message));
     std::string received;
     HERMES_CHECK(connection->ReceiveLine(&received, &error_message));
-    HERMES_CHECK(received.find("+OK Hermes test server") != std::string::npos);
+    HERMES_CHECK(received.find("+OK Hemera test server") != std::string::npos);
     connection->Close();
 
     server.join();

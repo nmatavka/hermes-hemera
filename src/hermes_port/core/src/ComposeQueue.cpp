@@ -1,4 +1,5 @@
 #include "hermes/ComposeQueue.h"
+#include "hermes/RichTextFormat.h"
 
 #include <chrono>
 
@@ -63,6 +64,7 @@ std::string WrapPlainText(std::string_view text, std::size_t width) {
 }
 
 MessageRecord BuildQueuedRecord(const ComposeMessage& message, std::string_view mailbox_id) {
+    const RichTextDocument prepared_body = PrepareRichTextDocumentForPersistence(message.body);
     MessageRecord queued;
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(
                          std::chrono::system_clock::now().time_since_epoch())
@@ -85,12 +87,17 @@ MessageRecord BuildQueuedRecord(const ComposeMessage& message, std::string_view 
         queued.recipients += message.headers.bcc;
     }
     queued.plain_text_body = message.options.word_wrap
-                                 ? WrapPlainText(message.body.plain_text,
+                                 ? WrapPlainText(prepared_body.plain_text,
                                                  static_cast<std::size_t>(message.policy.word_wrap_max))
-                                 : message.body.plain_text;
-    queued.html_body = message.body.html_fragment;
+                                 : prepared_body.plain_text;
+    queued.html_body = prepared_body.html_fragment;
+    queued.rtf_body = prepared_body.rtf_fragment;
+    queued.paige_native_body = prepared_body.paige_native_bytes;
+    queued.styled_source = prepared_body.styled_source;
+    queued.styled_fidelity = prepared_body.fidelity;
     queued.account_id = message.headers.from_persona.empty() ? "primary" : message.headers.from_persona;
     queued.delivery_state = MessageDeliveryState::kQueued;
+    queued.legacy_status = hermes::LegacyMessageStatus::kQueued;
     queued.created_at = static_cast<std::int64_t>(now);
     queued.updated_at = queued.created_at;
     queued.unread = false;

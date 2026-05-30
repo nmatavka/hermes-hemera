@@ -1,0 +1,18 @@
+resource app_signature "@HEMERA_HAIKU_APP_SIGNATURE@";
+
+resource app_flags B_SINGLE_LAUNCH;
+
+resource app_version {
+    major = @Hemera_VERSION_MAJOR@,
+    middle = @Hemera_VERSION_MINOR@,
+    minor = @Hemera_VERSION_PATCH@,
+
+    variety = B_APPV_BETA,
+    internal = 1,
+    short_info = "Hemera",
+    long_info = "Hemera @HEMERA_RC_VERSION@"
+};
+
+resource vector_icon {
+    $"@HEMERA_APP_ICON_HEX_RDEF@"
+};

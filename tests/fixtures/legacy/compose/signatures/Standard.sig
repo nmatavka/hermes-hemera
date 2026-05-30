@@ -1,3 +1,3 @@
 -- 
 Nick Example
-Hermes Hemera
+HERMES Hemera

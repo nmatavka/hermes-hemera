@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "hermes/PaigeRuntime.h"
+#include "hermes/RichTextFormat.h"
 #include "hermes/RichTextSurface.h"
 
 namespace hermes {
@@ -57,8 +58,8 @@ private:
     std::vector<RichTextDocument> undo_stack_;
     std::vector<RichTextDocument> redo_stack_;
     std::string clipboard_;
+    RichTextDocument clipboard_document_;
     std::vector<TextDiagnostic> diagnostics_;
-    std::string styled_shadow_html_;
     std::uintptr_t native_document_ = 0;
     void* native_view_ = nullptr;
     float native_width_ = 720.0f;

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <sstream>
 
 #include "hermes/IniSettingsStore.h"
 
@@ -56,6 +57,24 @@ TransportSecurityMode SecurityModeFromSettings(const SettingsStore& settings,
 }
 
 PopAuthMode PopAuthFromSettings(const SettingsStore& settings, std::string_view section) {
+    if (const auto method = settings.GetString(section, "POPAuthMethod")) {
+        std::string normalized = *method;
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (normalized == "oauth2" || normalized == "xoauth2") {
+            return PopAuthMode::kOAuth2;
+        }
+        if (normalized == "kerberos") {
+            return PopAuthMode::kKerberos;
+        }
+        if (normalized == "apop") {
+            return PopAuthMode::kAPOP;
+        }
+        if (normalized == "rpa") {
+            return PopAuthMode::kRPA;
+        }
+    }
     if (settings.GetBool(section, "AuthenticateKerberos", false)) {
         return PopAuthMode::kKerberos;
     }
@@ -69,6 +88,21 @@ PopAuthMode PopAuthFromSettings(const SettingsStore& settings, std::string_view 
 }
 
 ImapAuthMode ImapAuthFromSettings(const SettingsStore& settings, std::string_view section) {
+    if (const auto method = settings.GetString(section, "IMAPAuthMethod")) {
+        std::string normalized = *method;
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (normalized == "oauth2" || normalized == "xoauth2") {
+            return ImapAuthMode::kOAuth2;
+        }
+        if (normalized == "kerberos") {
+            return ImapAuthMode::kKerberos;
+        }
+        if (normalized == "cram-md5" || normalized == "cram_md5") {
+            return ImapAuthMode::kCramMd5;
+        }
+    }
     if (settings.GetBool(section, "AuthenticateKerberos", false)) {
         return ImapAuthMode::kKerberos;
     }
@@ -95,6 +129,9 @@ SmtpAuthMode SmtpAuthFromSettings(const SettingsStore& settings, std::string_vie
         if (normalized == "plain") {
             return SmtpAuthMode::kPlain;
         }
+        if (normalized == "oauth2" || normalized == "xoauth2") {
+            return SmtpAuthMode::kOAuth2;
+        }
         if (normalized == "none") {
             return SmtpAuthMode::kNone;
         }
@@ -104,6 +141,47 @@ SmtpAuthMode SmtpAuthFromSettings(const SettingsStore& settings, std::string_vie
         return SmtpAuthMode::kPlain;
     }
     return SmtpAuthMode::kNone;
+}
+
+OAuthProviderKind OAuthProviderFromSettings(const SettingsStore& settings, std::string_view section) {
+    std::string normalized = settings.GetString(section, "OAuthProviderKind").value_or("");
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (normalized == "microsoft365" || normalized == "microsoft" || normalized == "outlook") {
+        return OAuthProviderKind::kMicrosoft365;
+    }
+    if (normalized == "google" || normalized == "gmail") {
+        return OAuthProviderKind::kGoogle;
+    }
+    if (normalized == "custom") {
+        return OAuthProviderKind::kCustom;
+    }
+    return OAuthProviderKind::kNone;
+}
+
+OAuthAuthMechanism OAuthMechanismFromSettings(const SettingsStore& settings, std::string_view section) {
+    std::string normalized = settings.GetString(section, "OAuthAuthMechanism").value_or("");
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (normalized == "oauthbearer") {
+        return OAuthAuthMechanism::kOAUTHBEARER;
+    }
+    return OAuthAuthMechanism::kXOAUTH2;
+}
+
+std::vector<std::string> OAuthScopesFromSettings(const SettingsStore& settings, std::string_view section) {
+    std::string value = settings.GetString(section, "OAuthScopes").value_or("");
+    std::replace(value.begin(), value.end(), ',', ' ');
+    std::replace(value.begin(), value.end(), ';', ' ');
+    std::istringstream stream(value);
+    std::vector<std::string> scopes;
+    std::string scope;
+    while (stream >> scope) {
+        scopes.push_back(scope);
+    }
+    return scopes;
 }
 
 ImapDownloadMode ImapDownloadModeFromSettings(const SettingsStore& settings,
@@ -145,6 +223,9 @@ AccountProfile ProfileFromSection(const SettingsStore& settings, std::string_vie
     profile.email_address = settings.GetString(section, "ReturnAddress")
                                 .value_or(settings.GetString(section, "POPAccount").value_or(""));
     profile.login_name = settings.GetString(section, "LoginName").value_or("");
+    profile.reply_to_address =
+        settings.GetString(section, "ReplyTo")
+            .value_or(settings.GetString(section, "PersonalityReplyTo").value_or(""));
     profile.uses_pop = settings.GetBool(section, "UsesPOP", false);
     profile.uses_imap = settings.GetBool(section, "UsesIMAP", false);
     profile.incoming_server = settings.GetString(section, profile.uses_imap ? "ImapServer" : "PopServer")
@@ -184,6 +265,15 @@ AccountProfile ProfileFromSection(const SettingsStore& settings, std::string_vie
         settings.GetString(section, "KerberosServiceFormat").value_or("%s@%h");
     profile.kerberos.pop_port =
         ParsePort(settings, section, "KerberosPOPPort", profile.incoming_port == 0 ? 110 : profile.incoming_port);
+    profile.oauth.provider_kind = OAuthProviderFromSettings(settings, section);
+    profile.oauth.device_authorization_endpoint =
+        settings.GetString(section, "OAuthDeviceAuthorizationEndpoint").value_or("");
+    profile.oauth.token_endpoint = settings.GetString(section, "OAuthTokenEndpoint").value_or("");
+    profile.oauth.auth_mechanism = OAuthMechanismFromSettings(settings, section);
+    profile.oauth.client_id = settings.GetString(section, "OAuthClientId").value_or("");
+    profile.oauth.tenant_or_domain = settings.GetString(section, "OAuthTenantOrDomain").value_or("");
+    profile.oauth.scopes = OAuthScopesFromSettings(settings, section);
+    profile.oauth.client_secret_required = settings.GetBool(section, "OAuthClientSecretRequired", false);
     return profile;
 }
 
@@ -197,6 +287,87 @@ std::string SecurityModeToString(TransportSecurityMode mode) {
             return "starttls";
     }
     return "plain";
+}
+
+std::string PopAuthToString(PopAuthMode mode) {
+    switch (mode) {
+        case PopAuthMode::kPassword:
+            return "password";
+        case PopAuthMode::kKerberos:
+            return "kerberos";
+        case PopAuthMode::kAPOP:
+            return "apop";
+        case PopAuthMode::kRPA:
+            return "rpa";
+        case PopAuthMode::kOAuth2:
+            return "oauth2";
+    }
+    return "password";
+}
+
+std::string ImapAuthToString(ImapAuthMode mode) {
+    switch (mode) {
+        case ImapAuthMode::kPassword:
+            return "password";
+        case ImapAuthMode::kKerberos:
+            return "kerberos";
+        case ImapAuthMode::kCramMd5:
+            return "cram-md5";
+        case ImapAuthMode::kOAuth2:
+            return "oauth2";
+    }
+    return "password";
+}
+
+std::string SmtpAuthToString(SmtpAuthMode mode) {
+    switch (mode) {
+        case SmtpAuthMode::kNone:
+            return "none";
+        case SmtpAuthMode::kCramMd5:
+            return "cram-md5";
+        case SmtpAuthMode::kLogin:
+            return "login";
+        case SmtpAuthMode::kPlain:
+            return "plain";
+        case SmtpAuthMode::kOAuth2:
+            return "oauth2";
+    }
+    return "none";
+}
+
+std::string OAuthProviderToString(OAuthProviderKind kind) {
+    switch (kind) {
+        case OAuthProviderKind::kNone:
+            return "none";
+        case OAuthProviderKind::kMicrosoft365:
+            return "microsoft365";
+        case OAuthProviderKind::kGoogle:
+            return "google";
+        case OAuthProviderKind::kCustom:
+            return "custom";
+    }
+    return "none";
+}
+
+std::string OAuthMechanismToString(OAuthAuthMechanism mechanism) {
+    switch (mechanism) {
+        case OAuthAuthMechanism::kXOAUTH2:
+            return "xoauth2";
+        case OAuthAuthMechanism::kOAUTHBEARER:
+            return "oauthbearer";
+    }
+    return "xoauth2";
+}
+
+std::string JoinScopes(const std::vector<std::string>& scopes) {
+    std::ostringstream stream;
+    for (std::size_t index = 0; index < scopes.size(); ++index) {
+        if (index != 0) {
+            stream << ' ';
+        }
+        stream << scopes[index];
+    }
+    return stream.str();
 }
 
 void WriteBool(SettingsStore& settings, std::string_view section, std::string_view key, bool value) {
@@ -225,6 +396,8 @@ void ClearAccountSection(SettingsStore& settings, std::string_view section) {
     static constexpr const char* kAccountKeys[] = {
         "RealName",
         "ReturnAddress",
+        "ReplyTo",
+        "PersonalityReplyTo",
         "POPAccount",
         "LoginName",
         "UsesPOP",
@@ -247,7 +420,9 @@ void ClearAccountSection(SettingsStore& settings, std::string_view section) {
         "AuthenticateKerberos",
         "AuthenticateAPOP",
         "AuthenticateRPA",
+        "POPAuthMethod",
         "AuthenticateCRAMMD5",
+        "IMAPAuthMethod",
         "SmtpAuthAllowed",
         "SmtpAuthMethod",
         "LeaveMailOnServer",
@@ -266,6 +441,14 @@ void ClearAccountSection(SettingsStore& settings, std::string_view section) {
         "KerberosRealm",
         "KerberosServiceFormat",
         "KerberosPOPPort",
+        "OAuthProviderKind",
+        "OAuthDeviceAuthorizationEndpoint",
+        "OAuthTokenEndpoint",
+        "OAuthAuthMechanism",
+        "OAuthClientId",
+        "OAuthTenantOrDomain",
+        "OAuthScopes",
+        "OAuthClientSecretRequired",
     };
 
     for (const char* key : kAccountKeys) {
@@ -278,6 +461,8 @@ void WriteAccount(SettingsStore& settings, std::string_view section, const Accou
     settings.SetString(section,
                        "ReturnAddress",
                        profile.email_address.empty() ? profile.id : profile.email_address);
+    settings.SetString(section, "ReplyTo", profile.reply_to_address);
+    settings.SetString(section, "PersonalityReplyTo", profile.reply_to_address);
     settings.SetString(section,
                        "POPAccount",
                        profile.email_address.empty() ? profile.id : profile.email_address);
@@ -312,26 +497,15 @@ void WriteAccount(SettingsStore& settings, std::string_view section, const Accou
               profile.outgoing_security == TransportSecurityMode::kStartTls);
     WriteBool(settings, section, "AuthenticateAPOP", profile.pop_auth == PopAuthMode::kAPOP);
     WriteBool(settings, section, "AuthenticateRPA", profile.pop_auth == PopAuthMode::kRPA);
+    settings.SetString(section, "POPAuthMethod", PopAuthToString(profile.pop_auth));
     WriteBool(settings,
               section,
               "AuthenticateKerberos",
               profile.pop_auth == PopAuthMode::kKerberos || profile.imap_auth == ImapAuthMode::kKerberos);
     WriteBool(settings, section, "AuthenticateCRAMMD5", profile.imap_auth == ImapAuthMode::kCramMd5);
+    settings.SetString(section, "IMAPAuthMethod", ImapAuthToString(profile.imap_auth));
     WriteBool(settings, section, "SmtpAuthAllowed", profile.smtp_auth_allowed);
-    switch (profile.smtp_auth) {
-        case SmtpAuthMode::kNone:
-            settings.SetString(section, "SmtpAuthMethod", "none");
-            break;
-        case SmtpAuthMode::kCramMd5:
-            settings.SetString(section, "SmtpAuthMethod", "cram-md5");
-            break;
-        case SmtpAuthMode::kLogin:
-            settings.SetString(section, "SmtpAuthMethod", "login");
-            break;
-        case SmtpAuthMode::kPlain:
-            settings.SetString(section, "SmtpAuthMethod", "plain");
-            break;
-    }
+    settings.SetString(section, "SmtpAuthMethod", SmtpAuthToString(profile.smtp_auth));
     WriteBool(settings, section, "LeaveMailOnServer", profile.leave_mail_on_server);
     WriteBool(settings, section, "DeleteMailFromServer", profile.delete_mail_from_server);
     WriteBool(settings, section, "SkipBigMessages", profile.skip_big_messages);
@@ -351,6 +525,14 @@ void WriteAccount(SettingsStore& settings, std::string_view section, const Accou
     settings.SetString(section, "KerberosRealm", profile.kerberos.realm);
     settings.SetString(section, "KerberosServiceFormat", profile.kerberos.service_format);
     WriteInt(settings, section, "KerberosPOPPort", profile.kerberos.pop_port);
+    settings.SetString(section, "OAuthProviderKind", OAuthProviderToString(profile.oauth.provider_kind));
+    settings.SetString(section, "OAuthDeviceAuthorizationEndpoint", profile.oauth.device_authorization_endpoint);
+    settings.SetString(section, "OAuthTokenEndpoint", profile.oauth.token_endpoint);
+    settings.SetString(section, "OAuthAuthMechanism", OAuthMechanismToString(profile.oauth.auth_mechanism));
+    settings.SetString(section, "OAuthClientId", profile.oauth.client_id);
+    settings.SetString(section, "OAuthTenantOrDomain", profile.oauth.tenant_or_domain);
+    settings.SetString(section, "OAuthScopes", JoinScopes(profile.oauth.scopes));
+    WriteBool(settings, section, "OAuthClientSecretRequired", profile.oauth.client_secret_required);
 }
 
 }  // namespace

@@ -18,6 +18,7 @@ HERMES_TEST(LegacyAccountServiceLoadsTrackedProfileSnapshot) {
     HERMES_CHECK_EQ(account.display_name, std::string("Jason"));
     HERMES_CHECK_EQ(account.email_address, std::string("jmiller@swamp.qualcomm.com"));
     HERMES_CHECK_EQ(account.login_name, std::string("jmiller"));
+    HERMES_CHECK_EQ(account.reply_to_address, std::string(""));
     HERMES_CHECK_EQ(account.incoming_server, std::string("swamp.qualcomm.com"));
     HERMES_CHECK_EQ(account.outgoing_server, std::string("swamp.qualcomm.com"));
     HERMES_CHECK_EQ(account.incoming_port, static_cast<std::uint16_t>(110));
@@ -104,6 +105,7 @@ HERMES_TEST(LegacyAccountServiceCanRoundTripWritablePersonalities) {
     work.display_name = "Work";
     work.email_address = "work@example.com";
     work.login_name = "work";
+    work.reply_to_address = "reply-work@example.com";
     work.incoming_server = "imap.example.com";
     work.outgoing_server = "smtp.work.example.com";
     work.incoming_port = 993;
@@ -134,4 +136,49 @@ HERMES_TEST(LegacyAccountServiceCanRoundTripWritablePersonalities) {
     HERMES_CHECK(saved_work->uses_imap);
     HERMES_CHECK_EQ(saved_work->imap_auth, hermes::ImapAuthMode::kKerberos);
     HERMES_CHECK_EQ(saved_work->outgoing_security, hermes::TransportSecurityMode::kStartTls);
+    HERMES_CHECK_EQ(saved_work->reply_to_address, std::string("reply-work@example.com"));
+}
+
+HERMES_TEST(LegacyAccountServiceCanRoundTripOAuthSettings) {
+    hermes::LegacyAccountService service;
+    hermes::AccountProfile oauth;
+    oauth.id = "Persona-OAuth";
+    oauth.display_name = "OAuth";
+    oauth.email_address = "oauth@example.com";
+    oauth.login_name = "oauth@example.com";
+    oauth.reply_to_address = "oauth-replies@example.com";
+    oauth.incoming_server = "imap.example.com";
+    oauth.outgoing_server = "smtp.example.com";
+    oauth.incoming_port = 993;
+    oauth.outgoing_port = 587;
+    oauth.uses_imap = true;
+    oauth.incoming_security = hermes::TransportSecurityMode::kImplicitTls;
+    oauth.outgoing_security = hermes::TransportSecurityMode::kStartTls;
+    oauth.imap_auth = hermes::ImapAuthMode::kOAuth2;
+    oauth.smtp_auth = hermes::SmtpAuthMode::kOAuth2;
+    oauth.smtp_auth_allowed = true;
+    oauth.oauth.provider_kind = hermes::OAuthProviderKind::kMicrosoft365;
+    oauth.oauth.auth_mechanism = hermes::OAuthAuthMechanism::kXOAUTH2;
+    oauth.oauth.client_id = "client-id";
+    oauth.oauth.tenant_or_domain = "contoso.com";
+    oauth.oauth.scopes = {"offline_access", "https://outlook.office.com/IMAP.AccessAsUser.All"};
+
+    service.SetAccounts({oauth});
+
+    hermes::IniSettingsStore settings;
+    std::string error_message;
+    HERMES_CHECK(service.SaveToSettings(settings, &error_message));
+
+    hermes::LegacyAccountService reloaded;
+    HERMES_CHECK(reloaded.LoadFromSettings(settings));
+    const auto saved = reloaded.FindById("oauth@example.com");
+    HERMES_CHECK(static_cast<bool>(saved));
+    HERMES_CHECK_EQ(saved->imap_auth, hermes::ImapAuthMode::kOAuth2);
+    HERMES_CHECK_EQ(saved->smtp_auth, hermes::SmtpAuthMode::kOAuth2);
+    HERMES_CHECK_EQ(saved->oauth.provider_kind, hermes::OAuthProviderKind::kMicrosoft365);
+    HERMES_CHECK_EQ(saved->oauth.auth_mechanism, hermes::OAuthAuthMechanism::kXOAUTH2);
+    HERMES_CHECK_EQ(saved->oauth.client_id, std::string("client-id"));
+    HERMES_CHECK_EQ(saved->oauth.tenant_or_domain, std::string("contoso.com"));
+    HERMES_CHECK_EQ(saved->oauth.scopes.size(), static_cast<std::size_t>(2));
+    HERMES_CHECK_EQ(saved->reply_to_address, std::string("oauth-replies@example.com"));
 }

@@ -22,6 +22,7 @@ public:
     virtual bool ResyncMailbox(std::string_view mailbox_id) = 0;
     virtual bool DeleteMessage(std::string_view mailbox_id, std::string_view message_id) = 0;
     virtual bool UndeleteMessage(std::string_view mailbox_id, std::string_view message_id) = 0;
+    virtual bool PurgeMailbox(std::string_view mailbox_id) = 0;
     virtual bool MoveMessage(std::string_view mailbox_id,
                              std::string_view message_id,
                              std::string_view destination_mailbox_id) = 0;

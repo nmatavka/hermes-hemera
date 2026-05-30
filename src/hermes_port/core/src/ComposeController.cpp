@@ -1,4 +1,5 @@
 #include "hermes/ComposeController.h"
+#include "hermes/RichTextFormat.h"
 
 #include <algorithm>
 #include <array>
@@ -261,7 +262,7 @@ std::string SegmentTextAt(const std::vector<Segment>& segments,
 }
 
 bool HasStyles(const RichTextDocument& document) {
-    return !document.html_fragment.empty() && !IsWhitespaceOnly(document.html_fragment);
+    return HasAuthenticStyledContent(document);
 }
 
 bool IsDefaultOptions(const ComposeOptions& options) {
@@ -273,39 +274,6 @@ bool IsDefaultOptions(const ComposeOptions& options) {
            options.word_wrap == true &&
            options.tabs_in_body == true &&
            options.text_as_document == false;
-}
-
-std::string EscapeHtml(std::string_view text) {
-    std::string escaped;
-    escaped.reserve(text.size() + 32);
-
-    for (char ch : text) {
-        switch (ch) {
-            case '&':
-                escaped += "&amp;";
-                break;
-            case '<':
-                escaped += "&lt;";
-                break;
-            case '>':
-                escaped += "&gt;";
-                break;
-            case '"':
-                escaped += "&quot;";
-                break;
-            case '\'':
-                escaped += "&#39;";
-                break;
-            case '\n':
-                escaped += "<br/>\n";
-                break;
-            default:
-                escaped.push_back(ch);
-                break;
-        }
-    }
-
-    return escaped;
 }
 
 TextDiagnosticSeverity ToTextSeverity(ComposeDiagnosticSeverity severity) {
@@ -459,21 +427,7 @@ bool ComposeController::ApplyStationery(std::string_view name) {
         message_.signature_name = stationery->signature_name;
     }
 
-    RichTextDocument body = surface_.Snapshot();
-    if (!Trim(stationery->body.plain_text).empty()) {
-        if (!Trim(body.plain_text).empty()) {
-            body.plain_text += "\n";
-        }
-        body.plain_text += stationery->body.plain_text;
-    }
-    if (!Trim(stationery->body.html_fragment).empty()) {
-        if (!Trim(body.html_fragment).empty()) {
-            body.html_fragment += "\n";
-        } else if (!Trim(body.plain_text).empty()) {
-            body.html_fragment = "<div>" + EscapeHtml(body.plain_text) + "</div>\n";
-        }
-        body.html_fragment += stationery->body.html_fragment;
-    }
+    RichTextDocument body = MergeRichTextDocuments(surface_.Snapshot(), stationery->body, "\n");
     body.read_only = message_.policy.read_only;
     message_.stationery_name = stationery->name;
     message_.body = body;
@@ -1102,7 +1056,7 @@ bool ComposeController::RemoveManagedSignatureFromBody() {
 }
 
 bool ComposeController::InsertSignatureIntoBody(const SignatureTemplate& signature) {
-    RichTextDocument before = surface_.Snapshot();
+    const RichTextDocument before = surface_.Snapshot();
     if (before.read_only) {
         return false;
     }
@@ -1112,41 +1066,22 @@ bool ComposeController::InsertSignatureIntoBody(const SignatureTemplate& signatu
         prefix = before.plain_text.back() == '\n' ? "\n" : "\n\n";
     }
 
-    if (!surface_.SetSelection({before.plain_text.size(), 0})) {
+    RichTextDocument inserted_signature = signature.body;
+    if (!prefix.empty()) {
+        RichTextDocument prefix_document;
+        prefix_document.plain_text = prefix;
+        inserted_signature = MergeRichTextDocuments(prefix_document, inserted_signature, "");
+    }
+    RichTextDocument merged = MergeRichTextDocuments(before, inserted_signature, "");
+    if (!surface_.Load(merged)) {
         return false;
     }
 
-    const std::string inserted = prefix + signature.body.plain_text;
-    if (!inserted.empty() && !surface_.ReplaceSelection(inserted)) {
-        return false;
-    }
-
-    RichTextDocument snapshot = surface_.Snapshot();
-    if (!signature.body.html_fragment.empty() || !before.html_fragment.empty()) {
-        std::string html_prefix;
-        if (!before.plain_text.empty()) {
-            html_prefix = before.plain_text.back() == '\n' ? "<br/>\n" : "<br/><br/>\n";
-        }
-
-        std::string base_html = before.html_fragment;
-        if (base_html.empty() && !before.plain_text.empty()) {
-            base_html = "<div>" + EscapeHtml(before.plain_text) + "</div>";
-        }
-
-        std::string signature_html = signature.body.html_fragment;
-        if (signature_html.empty()) {
-            signature_html = "<div>" + EscapeHtml(signature.body.plain_text) + "</div>";
-        }
-
-        snapshot.html_fragment = base_html + html_prefix + signature_html;
-        if (!surface_.Load(snapshot)) {
-            return false;
-        }
-    }
+    const RichTextDocument snapshot = surface_.Snapshot();
 
     message_.managed_signature.attached = true;
     message_.managed_signature.name = signature.name;
-    message_.managed_signature.start = snapshot.plain_text.size() - signature.body.plain_text.size();
+    message_.managed_signature.start = before.plain_text.size() + prefix.size();
     message_.managed_signature.length = signature.body.plain_text.size();
     message_.managed_signature.plain_text = signature.body.plain_text;
     return true;

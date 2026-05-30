@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "hermes/ComposeMessage.h"
+#include "hermes/LegacyMessageStatus.h"
+#include "hermes/PopServerStatus.h"
 
 namespace hermes {
 
@@ -41,7 +43,12 @@ struct MessageRecord {
     std::string recipients;
     std::string plain_text_body;
     std::string html_body;
+    std::string rtf_body;
+    std::string paige_native_body;
+    StyledDocumentSource styled_source = StyledDocumentSource::kPlainText;
+    StyledDocumentFidelity styled_fidelity = StyledDocumentFidelity::kLossless;
     MessageDeliveryState delivery_state = MessageDeliveryState::kReceived;
+    LegacyMessageStatus legacy_status = LegacyMessageStatus::kUnread;
     std::string remote_id;
     std::string remote_mailbox;
     bool download_complete = true;
@@ -54,6 +61,11 @@ struct MessageRecord {
     std::int64_t created_at = 0;
     std::int64_t updated_at = 0;
     bool unread = true;
+    int label_index = 0;
+    int junk_score = 0;
+    bool manually_junked = false;
+    PopServerStatus pop_server_status = PopServerStatus::kNone;
+    std::int64_t scheduled_send_at = 0;
     ComposeOptions compose_options;
     bool use_legacy_return_receipt_header = false;
     std::vector<MessageAttachment> attachments;

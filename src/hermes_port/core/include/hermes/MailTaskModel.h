@@ -37,6 +37,11 @@ enum class MailTaskErrorKind {
     kTlsRequired,
     kKerberosUnavailable,
     kServicePrincipalFailure,
+    kProviderConfiguration,
+    kAuthorizationPending,
+    kAuthorizationDenied,
+    kTokenRefreshFailed,
+    kOAuthMechanismRejected,
 };
 
 struct MailTaskRecord {
@@ -74,6 +79,8 @@ public:
                           std::string_view mechanism = {}) = 0;
     virtual std::vector<MailTaskRecord> Tasks() const = 0;
     virtual std::vector<MailTaskError> Errors() const = 0;
+    virtual bool RemoveError(std::size_t index) = 0;
+    virtual void ClearErrors() = 0;
 };
 
 class InMemoryMailTaskModel final : public MailTaskModel {
@@ -87,6 +94,8 @@ public:
                   std::string_view mechanism = {}) override;
     std::vector<MailTaskRecord> Tasks() const override;
     std::vector<MailTaskError> Errors() const override;
+    bool RemoveError(std::size_t index) override;
+    void ClearErrors() override;
 
 private:
     std::vector<MailTaskRecord> tasks_;

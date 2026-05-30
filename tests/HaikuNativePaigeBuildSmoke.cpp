@@ -23,7 +23,11 @@ int main() {
     runtime.Initialize(&error_message);
 
     hermes::PaigeRichTextSurface surface(runtime);
-    surface.Load({"Native Paige build smoke", "<p>Native Paige build smoke</p>", false});
+    hermes::RichTextDocument document;
+    document.plain_text = "Native Paige build smoke";
+    document.html_fragment = "<p>Native Paige build smoke</p>";
+    document.styled_source = hermes::StyledDocumentSource::kHtml;
+    surface.Load(document);
     surface.ResizeNativeHost(640.0f, 480.0f);
     (void)surface.NativeBackendEnabled();
     (void)surface.NativeDocumentHandle();

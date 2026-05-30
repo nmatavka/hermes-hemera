@@ -5,7 +5,7 @@
 #include "hermes/MemoryRichTextSurface.h"
 
 HERMES_TEST(QueueComposeMessagePersistsValidatedMessagesToOutMailbox) {
-    hermes::tests::ScopedTempDirectory temp("hermes-queue");
+    hermes::tests::ScopedTempDirectory temp("hemera-queue");
     hermes::FilesystemMailboxStore mailbox_store(temp.Path());
     hermes::FilesystemMessageStore message_store(temp.Path());
     hermes::MemoryRichTextSurface surface;
@@ -37,7 +37,7 @@ HERMES_TEST(QueueComposeMessagePersistsValidatedMessagesToOutMailbox) {
 }
 
 HERMES_TEST(QueueComposeMessageRequiresConfirmationWhenWarningsArePresent) {
-    hermes::tests::ScopedTempDirectory temp("hermes-queue-warn");
+    hermes::tests::ScopedTempDirectory temp("hemera-queue-warn");
     hermes::FilesystemMailboxStore mailbox_store(temp.Path());
     hermes::FilesystemMessageStore message_store(temp.Path());
     hermes::MemoryRichTextSurface surface;
@@ -49,6 +49,7 @@ HERMES_TEST(QueueComposeMessageRequiresConfirmationWhenWarningsArePresent) {
     message.headers.from_persona = "Work";
     message.body.plain_text = "Styled body";
     message.body.html_fragment = "<p>Styled body</p>";
+    message.body.styled_source = hermes::StyledDocumentSource::kHtml;
     message.policy.warn_on_styled_send = true;
     message.policy.send_plain_and_styled = true;
 
@@ -63,10 +64,15 @@ HERMES_TEST(QueueComposeMessageRequiresConfirmationWhenWarningsArePresent) {
     const auto confirmed =
         hermes::QueueComposeMessage(controller, mailbox_store, message_store, "out", true);
     HERMES_CHECK(confirmed.queued);
+    const auto queued_message = message_store.GetMessage("out", "queue-002");
+    HERMES_CHECK(static_cast<bool>(queued_message));
+    HERMES_CHECK_EQ(queued_message->styled_source, hermes::StyledDocumentSource::kHtml);
+    HERMES_CHECK(!queued_message->html_body.empty());
+    HERMES_CHECK(!queued_message->rtf_body.empty());
 }
 
 HERMES_TEST(QueueComposeMessageCarriesComposeOptionsAndWrapsPlainTextWhenEnabled) {
-    hermes::tests::ScopedTempDirectory temp("hermes-queue-options");
+    hermes::tests::ScopedTempDirectory temp("hemera-queue-options");
     hermes::FilesystemMailboxStore mailbox_store(temp.Path());
     hermes::FilesystemMessageStore message_store(temp.Path());
     hermes::MemoryRichTextSurface surface;

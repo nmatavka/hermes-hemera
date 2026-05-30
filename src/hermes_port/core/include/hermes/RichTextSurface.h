@@ -7,10 +7,27 @@
 
 namespace hermes {
 
+enum class StyledDocumentSource {
+    kPlainText,
+    kHtml,
+    kRtf,
+    kPaigeNative,
+};
+
+enum class StyledDocumentFidelity {
+    kLossless,
+    kLossy,
+    kRequiresHtmlSurface,
+};
+
 struct RichTextDocument {
     std::string plain_text;
     std::string html_fragment;
     bool read_only = false;
+    std::string rtf_fragment;
+    std::string paige_native_bytes;
+    StyledDocumentSource styled_source = StyledDocumentSource::kPlainText;
+    StyledDocumentFidelity fidelity = StyledDocumentFidelity::kLossless;
 };
 
 struct TextSelection {

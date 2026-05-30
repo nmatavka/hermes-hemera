@@ -24,6 +24,16 @@ std::string ToString(MailTaskErrorKind kind) {
             return "kerberos-unavailable";
         case MailTaskErrorKind::kServicePrincipalFailure:
             return "service-principal-failure";
+        case MailTaskErrorKind::kProviderConfiguration:
+            return "provider-configuration";
+        case MailTaskErrorKind::kAuthorizationPending:
+            return "authorization-pending";
+        case MailTaskErrorKind::kAuthorizationDenied:
+            return "authorization-denied";
+        case MailTaskErrorKind::kTokenRefreshFailed:
+            return "token-refresh-failed";
+        case MailTaskErrorKind::kOAuthMechanismRejected:
+            return "oauth-mechanism-rejected";
     }
     return "unknown";
 }
@@ -72,6 +82,18 @@ std::vector<MailTaskRecord> InMemoryMailTaskModel::Tasks() const {
 
 std::vector<MailTaskError> InMemoryMailTaskModel::Errors() const {
     return errors_;
+}
+
+bool InMemoryMailTaskModel::RemoveError(std::size_t index) {
+    if (index >= errors_.size()) {
+        return false;
+    }
+    errors_.erase(errors_.begin() + static_cast<std::ptrdiff_t>(index));
+    return true;
+}
+
+void InMemoryMailTaskModel::ClearErrors() {
+    errors_.clear();
 }
 
 }  // namespace hermes

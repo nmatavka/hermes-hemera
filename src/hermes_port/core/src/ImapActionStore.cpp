@@ -16,6 +16,8 @@ std::string ActionKindToString(ImapActionKind kind) {
             return "delete";
         case ImapActionKind::kUndelete:
             return "undelete";
+        case ImapActionKind::kExpungeMailbox:
+            return "expunge-mailbox";
         case ImapActionKind::kMove:
             return "move";
         case ImapActionKind::kCopy:
@@ -28,8 +30,14 @@ std::string ActionKindToString(ImapActionKind kind) {
             return "delete-mailbox";
         case ImapActionKind::kFetchAttachment:
             return "fetch-attachment";
+        case ImapActionKind::kFetchDefaultMessage:
+            return "fetch-default-message";
         case ImapActionKind::kFetchFullMessage:
             return "fetch-full-message";
+        case ImapActionKind::kRedownloadDefaultMessage:
+            return "redownload-default-message";
+        case ImapActionKind::kRedownloadFullMessage:
+            return "redownload-full-message";
         case ImapActionKind::kResyncMailbox:
             return "resync-mailbox";
         case ImapActionKind::kRefreshMailboxList:
@@ -47,6 +55,9 @@ ImapActionKind ActionKindFromString(std::string value) {
     }
     if (value == "undelete") {
         return ImapActionKind::kUndelete;
+    }
+    if (value == "expunge-mailbox") {
+        return ImapActionKind::kExpungeMailbox;
     }
     if (value == "move") {
         return ImapActionKind::kMove;
@@ -66,8 +77,17 @@ ImapActionKind ActionKindFromString(std::string value) {
     if (value == "fetch-attachment") {
         return ImapActionKind::kFetchAttachment;
     }
+    if (value == "fetch-default-message") {
+        return ImapActionKind::kFetchDefaultMessage;
+    }
     if (value == "fetch-full-message") {
         return ImapActionKind::kFetchFullMessage;
+    }
+    if (value == "redownload-default-message") {
+        return ImapActionKind::kRedownloadDefaultMessage;
+    }
+    if (value == "redownload-full-message") {
+        return ImapActionKind::kRedownloadFullMessage;
     }
     if (value == "resync-mailbox") {
         return ImapActionKind::kResyncMailbox;
