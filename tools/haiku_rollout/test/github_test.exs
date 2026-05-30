@@ -59,11 +59,76 @@ defmodule HemeraHaikuRollout.GitHubTest do
             "--repo",
             context.haikuports_repo_slug,
             "--head",
-            "#{config.haikuports_fork_owner}:#{context.haikuports_branch}",
+            context.haikuports_branch,
             "--json",
-            "number,url"
+            "number,url,headRefName,headRepositoryOwner"
           ],
-          stdout: ~s([{"number":17,"url":"https://example.test/pr/17"}])},
+          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"hemera-1.0.0~rc1","headRepositoryOwner":{"login":"nick"}}])},
+        %{program: "gh",
+          args: [
+            "pr",
+            "edit",
+            "17",
+            "--repo",
+            context.haikuports_repo_slug,
+            "--title",
+            context.pr_title,
+            "--body",
+            context.pr_body
+          ],
+          stdout: ""}
+      ])
+
+    assert GitHub.ensure_pull_request!({FakeExecutor, agent}, config, context) == "https://example.test/pr/17"
+  end
+
+  test "recovers when gh pr create reports an existing pull request" do
+    config = config()
+    context = ReleaseContext.build(config, "1.0.0-rc1")
+
+    {:ok, agent} =
+      FakeExecutor.start_link([
+        %{program: "gh",
+          args: [
+            "pr",
+            "list",
+            "--repo",
+            context.haikuports_repo_slug,
+            "--head",
+            context.haikuports_branch,
+            "--json",
+            "number,url,headRefName,headRepositoryOwner"
+          ],
+          stdout: "[]"},
+        %{program: "gh",
+          args: [
+            "pr",
+            "create",
+            "--repo",
+            context.haikuports_repo_slug,
+            "--base",
+            config.haikuports_target_branch,
+            "--head",
+            "#{config.haikuports_fork_owner}:#{context.haikuports_branch}",
+            "--title",
+            context.pr_title,
+            "--body",
+            context.pr_body
+          ],
+          status: 1,
+          stdout: "a pull request for branch \"#{context.haikuports_branch}\" already exists\n"},
+        %{program: "gh",
+          args: [
+            "pr",
+            "list",
+            "--repo",
+            context.haikuports_repo_slug,
+            "--head",
+            context.haikuports_branch,
+            "--json",
+            "number,url,headRefName,headRepositoryOwner"
+          ],
+          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"hemera-1.0.0~rc1","headRepositoryOwner":{"login":"nick"}}])},
         %{program: "gh",
           args: [
             "pr",

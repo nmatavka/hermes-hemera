@@ -53,6 +53,7 @@ defmodule HemeraHaikuRollout.ConfigTest do
   test "init copies the example config and does not overwrite existing config" do
     tmp_dir = Path.join(System.tmp_dir!(), "hemera-haiku-rollout-config-#{System.unique_integer([:positive])}")
     config_path = Path.join(tmp_dir, "config.yml")
+    File.rm_rf!(tmp_dir)
 
     assert {:ok, :created, ^config_path} = Config.init(config_path)
     assert File.exists?(config_path)

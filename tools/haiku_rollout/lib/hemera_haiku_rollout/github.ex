@@ -56,46 +56,10 @@ defmodule HemeraHaikuRollout.GitHub do
   def ensure_pull_request!(executor, config, context) do
     case find_pull_request(executor, config, context) do
       nil ->
-        result =
-          Executor.run!(
-            executor,
-            "gh",
-            [
-              "pr",
-              "create",
-              "--repo",
-              context.haikuports_repo_slug,
-              "--base",
-              config.haikuports_target_branch,
-              "--head",
-              "#{config.haikuports_fork_owner}:#{context.haikuports_branch}",
-              "--title",
-              context.pr_title,
-              "--body",
-              context.pr_body
-            ]
-          )
-
-        String.trim(result.stdout)
+        create_pull_request!(executor, config, context)
 
       pr ->
-        Executor.run!(
-          executor,
-          "gh",
-          [
-            "pr",
-            "edit",
-            Integer.to_string(pr["number"]),
-            "--repo",
-            context.haikuports_repo_slug,
-            "--title",
-            context.pr_title,
-            "--body",
-            context.pr_body
-          ]
-        )
-
-        pr["url"]
+        edit_pull_request!(executor, context, pr)
     end
   end
 
@@ -149,15 +113,76 @@ defmodule HemeraHaikuRollout.GitHub do
           "--repo",
           context.haikuports_repo_slug,
           "--head",
-          "#{config.haikuports_fork_owner}:#{context.haikuports_branch}",
+          context.haikuports_branch,
           "--json",
-          "number,url"
+          "number,url,headRefName,headRepositoryOwner"
         ]
       )
 
-    case Jason.decode!(result.stdout) do
-      [pr | _] -> pr
-      _ -> nil
+    result.stdout
+    |> Jason.decode!()
+    |> Enum.find(fn pr ->
+      pr["headRefName"] == context.haikuports_branch and
+        get_in(pr, ["headRepositoryOwner", "login"]) == config.haikuports_fork_owner
+    end)
+  end
+
+  defp create_pull_request!(executor, config, context) do
+    result =
+      try do
+        Executor.run!(
+          executor,
+          "gh",
+          [
+            "pr",
+            "create",
+            "--repo",
+            context.haikuports_repo_slug,
+            "--base",
+            config.haikuports_target_branch,
+            "--head",
+            "#{config.haikuports_fork_owner}:#{context.haikuports_branch}",
+            "--title",
+            context.pr_title,
+            "--body",
+            context.pr_body
+          ]
+        )
+      rescue
+        error in HemeraHaikuRollout.CommandError ->
+          if String.contains?(error.stdout, "already exists") do
+            case find_pull_request(executor, config, context) do
+              nil -> reraise error, __STACKTRACE__
+              pr -> {:existing, pr}
+            end
+          else
+            reraise error, __STACKTRACE__
+          end
+      end
+
+    case result do
+      {:existing, pr} -> edit_pull_request!(executor, context, pr)
+      command_result -> String.trim(command_result.stdout)
     end
+  end
+
+  defp edit_pull_request!(executor, context, pr) do
+    Executor.run!(
+      executor,
+      "gh",
+      [
+        "pr",
+        "edit",
+        Integer.to_string(pr["number"]),
+        "--repo",
+        context.haikuports_repo_slug,
+        "--title",
+        context.pr_title,
+        "--body",
+        context.pr_body
+      ]
+    )
+
+    pr["url"]
   end
 end

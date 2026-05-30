@@ -1,4 +1,5 @@
 defmodule HemeraHaikuRollout.Watch do
+  alias HemeraHaikuRollout.CommandError
   alias HemeraHaikuRollout.Executor
   alias HemeraHaikuRollout.GitHub
 
@@ -12,7 +13,7 @@ defmodule HemeraHaikuRollout.Watch do
       :ok
     else
       pr_number = GitHub.resolve_pr!(executor, repo_slug, identifier)
-      Executor.run!(executor, "gh", ["pr", "checks", Integer.to_string(pr_number), "--repo", repo_slug, "--watch"])
+      maybe_watch_checks!(executor, repo_slug, pr_number)
       summary =
         Executor.run!(
           executor,
@@ -21,6 +22,33 @@ defmodule HemeraHaikuRollout.Watch do
         )
 
       IO.write(summary.stdout)
+    end
+  end
+
+  defp maybe_watch_checks!(executor, repo_slug, pr_number) do
+    result =
+      Executor.invoke(
+        executor,
+        "gh",
+        ["pr", "checks", Integer.to_string(pr_number), "--repo", repo_slug, "--watch"],
+        []
+      )
+
+    cond do
+      result.status == 0 ->
+        :ok
+
+      String.contains?(result.stdout, "no checks reported") ->
+        IO.puts(String.trim(result.stdout))
+        :ok
+
+      true ->
+        raise CommandError,
+          message: "command failed: #{Enum.join([result.program | result.args], " ")}",
+          program: result.program,
+          args: result.args,
+          status: result.status,
+          stdout: result.stdout
     end
   end
 end
