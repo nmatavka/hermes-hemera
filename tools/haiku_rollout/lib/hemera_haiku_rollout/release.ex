@@ -88,7 +88,7 @@ defmodule HemeraHaikuRollout.Release do
       )
     end
 
-    result = Executor.run!(executor, "git", ["rev-parse", context.tag], cwd: root)
+    result = Executor.run!(executor, "git", ["rev-parse", "#{context.tag}^{commit}"], cwd: root)
     String.trim(result.stdout)
   end
 
