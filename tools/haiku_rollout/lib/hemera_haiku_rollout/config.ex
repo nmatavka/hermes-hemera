@@ -36,6 +36,20 @@ defmodule HemeraHaikuRollout.Config do
     end
   end
 
+  def init(path \\ HemeraHaikuRollout.default_config_path()) do
+    destination = Path.expand(path)
+    File.mkdir_p!(Path.dirname(destination))
+
+    cond do
+      File.exists?(destination) ->
+        {:ok, :exists, destination}
+
+      true ->
+        File.cp!(HemeraHaikuRollout.example_config_path(), destination)
+        {:ok, :created, destination}
+    end
+  end
+
   def load(path) do
     if File.exists?(path) do
       with {:ok, yaml} <- read_yaml(path),

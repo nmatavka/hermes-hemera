@@ -25,7 +25,13 @@ On Haiku hosts, the optional local preflight also expects:
 
 ## Configuration
 
-Copy `config.example.yml` to `config.yml`, then fill in your real GitHub and HaikuPorts values.
+Bootstrap a local config first:
+
+```sh
+scripts/release_haiku_rollout.sh init
+```
+
+That creates `config.yml` beside the tool's `config.example.yml`. Then fill in your real GitHub and HaikuPorts values.
 
 Required config includes:
 
@@ -47,6 +53,7 @@ HEMERA_HAIKU_ROLLOUT_CONFIG=/abs/path/to/config.yml
 From the repository root:
 
 ```sh
+scripts/release_haiku_rollout.sh init
 scripts/release_haiku_rollout.sh doctor
 scripts/release_haiku_rollout.sh release 1.0.0-rc1
 scripts/release_haiku_rollout.sh watch 1234

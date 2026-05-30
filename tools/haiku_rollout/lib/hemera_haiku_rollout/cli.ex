@@ -16,6 +16,15 @@ defmodule HemeraHaikuRollout.CLI do
     config_path = Keyword.get(options, :config, HemeraHaikuRollout.default_config_path())
 
     case args do
+      ["init"] ->
+        case Config.init(config_path) do
+          {:ok, :created, path} ->
+            IO.puts("created rollout config at #{path}; fill in the GitHub and HaikuPorts values before running doctor or release")
+
+          {:ok, :exists, path} ->
+            IO.puts("rollout config already exists at #{path}")
+        end
+
       ["doctor"] ->
         config_path |> Config.load!() |> Doctor.run()
 
@@ -32,6 +41,7 @@ defmodule HemeraHaikuRollout.CLI do
       _ ->
         IO.puts("""
         usage:
+          scripts/release_haiku_rollout.sh init
           scripts/release_haiku_rollout.sh doctor
           scripts/release_haiku_rollout.sh release <version> [--dry-run]
           scripts/release_haiku_rollout.sh watch <pr-or-branch>

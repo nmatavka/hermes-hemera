@@ -30,4 +30,17 @@ defmodule HemeraHaikuRollout.ConfigTest do
     assert {:error, message} = Config.from_map(%{}, "memory")
     assert message =~ "github"
   end
+
+  test "init copies the example config and does not overwrite existing config" do
+    tmp_dir = Path.join(System.tmp_dir!(), "hemera-haiku-rollout-config-#{System.unique_integer([:positive])}")
+    config_path = Path.join(tmp_dir, "config.yml")
+
+    assert {:ok, :created, ^config_path} = Config.init(config_path)
+    assert File.exists?(config_path)
+    assert File.read!(config_path) == File.read!(HemeraHaikuRollout.example_config_path())
+
+    File.write!(config_path, "custom: true\n")
+    assert {:ok, :exists, ^config_path} = Config.init(config_path)
+    assert File.read!(config_path) == "custom: true\n"
+  end
 end
