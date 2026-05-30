@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(Hemera VERSION 1.0.0 LANGUAGES C CXX)
 
-set(HEMERA_RC_VERSION "1.0.0-rc1")
-set(HEMERA_HAIKU_PACKAGE_VERSION "1.0.0~rc1-1")
+set(HEMERA_RC_VERSION "1.0")
+set(HEMERA_HAIKU_PACKAGE_VERSION "1.0-1")
 set(HEMERA_HAIKU_APP_SIGNATURE "application/x-vnd.hermes-hemera")
 
 set(CMAKE_CXX_STANDARD 17)

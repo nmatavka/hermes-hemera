@@ -95,7 +95,7 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     const auto stale_tempscripts_path = source_root / "scripts" / "tempscripts";
     const auto notice_path =
         source_root / "src" / "hermes_port" / "haiku" / "assets" / "icons" / "NOTICE.md";
-    const auto release_notes_path = source_root / "docs" / "release-notes" / "1.0.0-rc1.md";
+    const auto release_notes_path = source_root / "docs" / "release-notes" / "1.0.md";
     const auto app_icon_path =
         source_root / "src" / "hermes_port" / "haiku" / "assets" / "icons" / "app" / "hemera-mail.hvif";
     const auto toolbar_icon_path =
@@ -163,12 +163,14 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     HERMES_CHECK(package_contents.find("vendor                \"HERMES\"") != std::string::npos);
     HERMES_CHECK(package_contents.find("app:Hemera = @HEMERA_HAIKU_PACKAGE_VERSION@") !=
                  std::string::npos);
+    HERMES_CHECK(package_contents.find("release candidate") == std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("Hemera") != std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("application/x-vnd.hermes-hemera") !=
                  std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("scripts/release_haiku_rollout.sh") !=
                  std::string::npos);
     HERMES_CHECK(recipe_contents.find("SUMMARY=\"Hemera mail client\"") != std::string::npos);
+    HERMES_CHECK(recipe_contents.find("release candidate") == std::string::npos);
     HERMES_CHECK(recipe_contents.find("HOMEPAGE=\"https://github.com/@HEMERA_REPO_SLUG@\"") !=
                  std::string::npos);
     HERMES_CHECK(recipe_contents.find("cmake --build build --target Hemera") != std::string::npos);
@@ -180,8 +182,8 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     HERMES_CHECK(rollout_launcher_contents.find("mix deps.get") != std::string::npos);
     HERMES_CHECK(notice_contents.find("Hemera") != std::string::npos);
     HERMES_CHECK(notice_contents.find("retrosmart-icon-theme") != std::string::npos);
-    HERMES_CHECK(release_notes_contents.find("# Hemera 1.0.0 RC1") != std::string::npos);
-    HERMES_CHECK(release_notes_contents.find("compose final dispatch validation") != std::string::npos);
-    HERMES_CHECK(release_notes_contents.find("Directory Services preview-close/reset validation") !=
+    HERMES_CHECK(release_notes_contents.find("# Hemera 1.0") != std::string::npos);
+    HERMES_CHECK(release_notes_contents.find("compose final dispatch needs broader live Haiku runtime validation") != std::string::npos);
+    HERMES_CHECK(release_notes_contents.find("Directory Services preview-close/reset needs broader live Haiku runtime validation") !=
                  std::string::npos);
 }

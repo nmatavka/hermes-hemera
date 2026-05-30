@@ -5,7 +5,7 @@ defmodule HemeraHaikuRollout.RepoVersionTest do
   alias HemeraHaikuRollout.ReleaseContext
   alias HemeraHaikuRollout.RepoVersion
 
-  test "accepts the checked-in rc release notes display form" do
+  test "accepts the checked-in final release notes display form" do
     {:ok, config} =
       Config.from_map(
         %{
@@ -23,7 +23,7 @@ defmodule HemeraHaikuRollout.RepoVersionTest do
         "memory"
       )
 
-    context = ReleaseContext.build(config, "1.0.0-rc1")
+    context = ReleaseContext.build(config, "1.0")
 
     assert RepoVersion.validate!(context) == nil
   end

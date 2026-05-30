@@ -7,8 +7,8 @@ resource app_version {
     middle = @Hemera_VERSION_MINOR@,
     minor = @Hemera_VERSION_PATCH@,
 
-    variety = B_APPV_BETA,
-    internal = 1,
+    variety = B_APPV_FINAL,
+    internal = 0,
     short_info = "Hemera",
     long_info = "Hemera @HEMERA_RC_VERSION@"
 };

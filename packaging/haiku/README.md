@@ -1,6 +1,6 @@
 # Hemera Haiku Packaging
 
-This directory contains the Haiku resource and package metadata for the `1.0.0-rc1` release candidate.
+This directory contains the Haiku resource and package metadata for the `1.0` release.
 
 - `Hemera.rdef.in`: app signature, version metadata, and embedded app icon resource template
 - `Hemera.PackageInfo.in`: HPKG metadata template used by the Haiku package target
@@ -12,5 +12,5 @@ For release work, use the rollout tool instead of editing recipes and checksums 
 
 ```sh
 scripts/release_haiku_rollout.sh doctor
-scripts/release_haiku_rollout.sh release 1.0.0-rc1
+scripts/release_haiku_rollout.sh release 1.0
 ```

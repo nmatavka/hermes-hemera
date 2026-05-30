@@ -31,6 +31,25 @@ defmodule HemeraHaikuRollout.ConfigTest do
     assert message =~ "github"
   end
 
+  test "rejects placeholder config values before any remote action" do
+    map = %{
+      "github" => %{
+        "repo_owner" => "YOUR_GITHUB_OWNER",
+        "repo_name" => "hermes-hemera"
+      },
+      "haikuports" => %{
+        "upstream_url" => "https://github.com/haikuports/haikuports.git",
+        "fork_url" => "git@github.com:YOUR_GITHUB_OWNER/haikuports.git",
+        "fork_owner" => "YOUR_GITHUB_OWNER",
+        "checkout_path" => "vendor/haikuports"
+      }
+    }
+
+    assert {:error, message} = Config.from_map(map, "memory")
+    assert message =~ "placeholder value"
+    assert message =~ "github.repo_owner"
+  end
+
   test "init copies the example config and does not overwrite existing config" do
     tmp_dir = Path.join(System.tmp_dir!(), "hemera-haiku-rollout-config-#{System.unique_integer([:positive])}")
     config_path = Path.join(tmp_dir, "config.yml")

@@ -58,7 +58,7 @@ defmodule HemeraHaikuRollout.Config do
       end
     else
       {:error,
-       "missing rollout config at #{path}; copy #{HemeraHaikuRollout.example_config_path()} to config.yml and fill in real values"}
+       "missing rollout config at #{path}; run scripts/release_haiku_rollout.sh init and fill in real values"}
     end
   end
 
@@ -71,6 +71,11 @@ defmodule HemeraHaikuRollout.Config do
          {:ok, fork_url} <- required_string(haikuports, "fork_url"),
          {:ok, fork_owner} <- required_string(haikuports, "fork_owner"),
          {:ok, checkout_path} <- required_string(haikuports, "checkout_path"),
+         :ok <- reject_placeholder("github.repo_owner", repo_owner),
+         :ok <- reject_placeholder("github.repo_name", repo_name),
+         :ok <- reject_placeholder("haikuports.upstream_url", upstream_url),
+         :ok <- reject_placeholder("haikuports.fork_url", fork_url),
+         :ok <- reject_placeholder("haikuports.fork_owner", fork_owner),
          {:ok, commands} <- command_list(Map.get(map, "haiku_preflight_commands", @default_haiku_preflight_commands)) do
       {:ok,
        %__MODULE__{
@@ -137,6 +142,20 @@ defmodule HemeraHaikuRollout.Config do
       value when is_binary(value) and value != "" -> value
       _ -> default
     end
+  end
+
+  defp reject_placeholder(label, value) do
+    if placeholder_string?(value) do
+      {:error, "config field #{label} still uses placeholder value #{inspect(value)}; fill in a real value first"}
+    else
+      :ok
+    end
+  end
+
+  defp placeholder_string?(value) do
+    String.contains?(value, "YOUR_GITHUB_OWNER") or
+      String.contains?(value, "YOUR_") or
+      String.contains?(value, "example.invalid")
   end
 
   defp expand_repo_path(path) do

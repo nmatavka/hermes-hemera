@@ -1,5 +1,5 @@
 SUMMARY="Hemera mail client"
-DESCRIPTION="Hemera is a Haiku-native mail client shell release candidate packaged by HERMES."
+DESCRIPTION="Hemera is a Haiku-native mail client shell packaged by HERMES."
 HOMEPAGE="https://github.com/@HEMERA_REPO_SLUG@"
 COPYRIGHT="2026 HERMES"
 LICENSE="MIT"

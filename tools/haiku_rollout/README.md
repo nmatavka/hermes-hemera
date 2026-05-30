@@ -55,14 +55,14 @@ From the repository root:
 ```sh
 scripts/release_haiku_rollout.sh init
 scripts/release_haiku_rollout.sh doctor
-scripts/release_haiku_rollout.sh release 1.0.0-rc1
+scripts/release_haiku_rollout.sh release 1.0
 scripts/release_haiku_rollout.sh watch 1234
 ```
 
 For a non-mutating preview of the release plan:
 
 ```sh
-scripts/release_haiku_rollout.sh release 1.0.0-rc1 --dry-run
+scripts/release_haiku_rollout.sh release 1.0 --dry-run
 ```
 
 ## End-to-end flow

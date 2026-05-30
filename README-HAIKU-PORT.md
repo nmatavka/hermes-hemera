@@ -51,7 +51,7 @@ HaikuPorts recipe manually:
 
 ```sh
 scripts/release_haiku_rollout.sh doctor
-scripts/release_haiku_rollout.sh release 1.0.0-rc1
+scripts/release_haiku_rollout.sh release 1.0
 ```
 
 The rollout tool lives in `tools/haiku_rollout/`, reads its own YAML config file, uploads
