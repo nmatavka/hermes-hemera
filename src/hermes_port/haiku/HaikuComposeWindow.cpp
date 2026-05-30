@@ -143,6 +143,45 @@ std::filesystem::path SourceRoot() {
 #endif
 }
 
+std::filesystem::path ExecutableDirectory() {
+    if (be_app == nullptr) {
+        return {};
+    }
+    app_info info{};
+    if (be_app->GetAppInfo(&info) != B_OK) {
+        return {};
+    }
+    BEntry entry(&info.ref, true);
+    BPath path;
+    if (entry.GetPath(&path) != B_OK) {
+        return {};
+    }
+    if (path.GetParent(&path) != B_OK) {
+        return {};
+    }
+    return std::filesystem::path(path.Path());
+}
+
+std::vector<std::filesystem::path> CandidateHunspellRoots() {
+    std::vector<std::filesystem::path> roots;
+    const auto executable_directory = ExecutableDirectory();
+    if (!executable_directory.empty()) {
+        roots.push_back(executable_directory / "data" / "hunspell");
+    }
+    roots.push_back(SourceRoot() / "src" / "hermes_port" / "haiku" / "assets" / "hunspell");
+    return roots;
+}
+
+std::filesystem::path BundledHunspellAsset(std::string_view name) {
+    for (const auto& root : CandidateHunspellRoots()) {
+        const auto candidate = root / std::string(name);
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return CandidateHunspellRoots().back() / std::string(name);
+}
+
 std::string JoinLines(const std::vector<std::string>& lines) {
     std::ostringstream stream;
     for (std::size_t index = 0; index < lines.size(); ++index) {
@@ -597,8 +636,8 @@ HaikuComposeWindow::HaikuComposeWindow(HaikuShellHost& shell_host, const Compose
       gui_preferences_(GuiPreferencesFromSettings(shell_host.Settings())),
       compose_cache_key_(message.id.empty() ? "compose-window" : message.id),
       spell_service_(std::make_unique<hermes::HunspellSpellService>(
-          SourceRoot() / "third_party" / "hunspell" / "tests" / "base_utf.aff",
-          SourceRoot() / "third_party" / "hunspell" / "tests" / "base_utf.dic")),
+          BundledHunspellAsset("base_utf.aff"),
+          BundledHunspellAsset("base_utf.dic"))),
       mood_watch_analyzer_(std::make_unique<hermes::TaeMoodWatchAnalyzer>(
           SourceRoot() / "src" / "legacy_transplants" / "tae" / "FlameLex.dat")) {
     std::string ignored;

@@ -28,6 +28,7 @@ add_executable(
     GuiPreferencesTests.cpp
     ImportServiceTests.cpp
     TestMain.cpp
+    HunspellSpellServiceTests.cpp
     RendererModeTests.cpp
     IniSettingsStoreTests.cpp
     ImapActionStoreTests.cpp
@@ -81,6 +82,20 @@ add_test(
     NAME hermes_no_legacy_path_references
     COMMAND "${CMAKE_SOURCE_DIR}/scripts/check_no_legacy_paths.sh" "${CMAKE_SOURCE_DIR}"
 )
+
+find_program(HEMERA_MIX_EXECUTABLE mix)
+
+if(HEMERA_MIX_EXECUTABLE)
+    add_test(
+        NAME hemera_haiku_rollout_tests
+        COMMAND "${CMAKE_SOURCE_DIR}/tools/haiku_rollout/run_tests.sh"
+    )
+    set_tests_properties(
+        hemera_haiku_rollout_tests
+        PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/tools/haiku_rollout"
+    )
+endif()
 
 if(HERMES_BUILD_HAIKU_SHELL AND CMAKE_SYSTEM_NAME STREQUAL "Haiku")
     add_executable(

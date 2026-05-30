@@ -17,7 +17,7 @@ endif()
 
 option(HERMES_BUILD_HAIKU_SHELL "Build the native Haiku shell." ${HERMES_BUILD_HAIKU_SHELL_DEFAULT})
 option(HERMES_ENABLE_TESTS "Build the Haiku port tests." ON)
-option(HERMES_ENABLE_NATIVE_PAIGE "Enable native Paige runtime integration." OFF)
+option(HERMES_ENABLE_NATIVE_PAIGE "Enable native Paige runtime integration." ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(HermesDependencies)

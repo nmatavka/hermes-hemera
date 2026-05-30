@@ -9,7 +9,7 @@ add_library(hermes::port_paige ALIAS hermes_port_paige)
 if(HERMES_ENABLE_NATIVE_PAIGE AND HERMES_IS_HAIKU AND HERMES_HAS_PAIGE)
     add_subdirectory(
         "${HERMES_PAIGE_ROOT}"
-        "${CMAKE_BINARY_DIR}/third_party/Hermes-Paige"
+        "${CMAKE_BINARY_DIR}/_deps/build/Hermes-Paige"
         EXCLUDE_FROM_ALL
     )
 endif()

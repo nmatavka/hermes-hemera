@@ -1,0 +1,5 @@
+/.elixir_ls/
+/_build/
+/config.yml
+/deps/
+/*.ez

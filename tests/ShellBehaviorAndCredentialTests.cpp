@@ -426,6 +426,44 @@ HERMES_TEST(HaikuHemeraBrandingAndIconSourcesAreWiredIntoTheShell) {
     HERMES_CHECK(haiku_cmake_contents.find("Hemera.PackageInfo.in") != std::string::npos);
     HERMES_CHECK(haiku_cmake_contents.find("HEMERA_PACKAGE_EXECUTABLE") != std::string::npos);
     HERMES_CHECK(haiku_cmake_contents.find("create -C") != std::string::npos);
+    HERMES_CHECK(haiku_cmake_contents.find("assets/hunspell") != std::string::npos);
+    HERMES_CHECK(haiku_cmake_contents.find("data/hunspell") != std::string::npos);
+}
+
+HERMES_TEST(DependencyConfigurationDefaultsToAutoFetchAndBundledHunspellAssets) {
+    const auto root_cmake_path = std::filesystem::path(HERMES_SOURCE_ROOT) / "CMakeLists.txt";
+    std::ifstream root_cmake_input(root_cmake_path);
+    HERMES_CHECK(root_cmake_input.good());
+    const std::string root_cmake_contents((std::istreambuf_iterator<char>(root_cmake_input)),
+                                          std::istreambuf_iterator<char>());
+    HERMES_CHECK(root_cmake_contents.find("option(HERMES_ENABLE_NATIVE_PAIGE \"Enable native Paige runtime integration.\" ON)") !=
+                 std::string::npos);
+
+    const auto dependencies_path =
+        std::filesystem::path(HERMES_SOURCE_ROOT) / "cmake" / "HermesDependencies.cmake";
+    std::ifstream dependencies_input(dependencies_path);
+    HERMES_CHECK(dependencies_input.good());
+    const std::string dependencies_contents((std::istreambuf_iterator<char>(dependencies_input)),
+                                            std::istreambuf_iterator<char>());
+    HERMES_CHECK(dependencies_contents.find("option(HERMES_PREFER_SYSTEM_DEPENDENCIES") !=
+                 std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("option(HERMES_ENABLE_DEPENDENCY_FETCH") !=
+                 std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("HERMES_DEPENDENCY_FETCH_ROOT") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("FetchContent_Declare(") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("Hemera: fetching") != std::string::npos);
+
+    const auto compose_path =
+        std::filesystem::path(HERMES_SOURCE_ROOT) / "src" / "hermes_port" / "haiku" / "HaikuComposeWindow.cpp";
+    std::ifstream compose_input(compose_path);
+    HERMES_CHECK(compose_input.good());
+    const std::string compose_contents((std::istreambuf_iterator<char>(compose_input)),
+                                       std::istreambuf_iterator<char>());
+    HERMES_CHECK(compose_contents.find("CandidateHunspellRoots()") != std::string::npos);
+    HERMES_CHECK(compose_contents.find("ExecutableDirectory()") != std::string::npos);
+    HERMES_CHECK(compose_contents.find("data\" / \"hunspell\"") != std::string::npos);
+    HERMES_CHECK(compose_contents.find("assets\" / \"hunspell\"") != std::string::npos);
+    HERMES_CHECK(compose_contents.find("third_party\" / \"hunspell\"") == std::string::npos);
 }
 
 HERMES_TEST(SelectedTextUrlActionsParseAndFormatFromSettings) {

@@ -42,3 +42,4 @@ ensure_checkout() {
 ensure_checkout "Hermes-Paige" "https://github.com/nmatavka/Hermes-Paige" "${THIRD_PARTY_DIR}/Hermes-Paige" "main" "main"
 ensure_checkout "openssl" "https://github.com/openssl/openssl" "${THIRD_PARTY_DIR}/openssl" "openssl-4.0.0"
 ensure_checkout "hunspell" "https://github.com/hunspell/hunspell" "${THIRD_PARTY_DIR}/hunspell" "v1.7.3"
+ensure_checkout "krb5" "https://github.com/krb5/krb5.git" "${THIRD_PARTY_DIR}/krb5" "krb5-1.22.2-final"

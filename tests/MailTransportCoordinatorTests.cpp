@@ -485,11 +485,13 @@ HERMES_TEST(InMemoryMailTaskModelTracksFailures) {
     HERMES_CHECK_EQ(errors.front().mechanism, std::string("LOGIN"));
 }
 
-HERMES_TEST(Krb5HeadersPreferProjectRootWhenAvailable) {
-    const std::filesystem::path krb5_header =
-        std::filesystem::path(HERMES_SOURCE_ROOT) / "third_party" / "krb5" / "src" / "include" / "krb5.h";
-    if (std::filesystem::exists(krb5_header)) {
+HERMES_TEST(Krb5HeadersTrackConfiguredRootWhenAvailable) {
+    const std::filesystem::path resolved_root = HERMES_KRB5_RESOLVED_ROOT_PATH;
+    const bool resolved_from_root = !resolved_root.empty();
+    if (resolved_from_root) {
         HERMES_CHECK_EQ(HERMES_KRB5_HEADERS_FROM_ROOT, 1);
+        HERMES_CHECK(std::filesystem::exists(resolved_root / "src" / "include" / "krb5.h") ||
+                     std::filesystem::exists(resolved_root / "include" / "krb5.h"));
     } else {
         HERMES_CHECK_EQ(HERMES_KRB5_HEADERS_FROM_ROOT, 0);
     }

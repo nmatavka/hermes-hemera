@@ -36,6 +36,16 @@ target_compile_definitions(
         HERMES_SOURCE_ROOT="${CMAKE_SOURCE_DIR}"
 )
 
+add_custom_command(
+    TARGET Hemera
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:Hemera>/data/hunspell"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/hunspell"
+            "$<TARGET_FILE_DIR:Hemera>/data/hunspell"
+    VERBATIM
+)
+
 if(HERMES_IS_HAIKU)
     find_program(HEMERA_RC_EXECUTABLE rc)
     find_program(HEMERA_XRES_EXECUTABLE xres)
@@ -75,11 +85,15 @@ if(HERMES_IS_HAIKU)
             OUTPUT "${HEMERA_HPKG_PATH}"
             COMMAND "${CMAKE_COMMAND}" -E rm -rf "${HEMERA_STAGE_ROOT}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${HEMERA_STAGE_ROOT}/${HEMERA_APP_DIRECTORY}/icons"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${HEMERA_STAGE_ROOT}/${HEMERA_APP_DIRECTORY}/data"
             COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:Hemera>"
                     "${HEMERA_STAGE_ROOT}/${HEMERA_APP_DIRECTORY}/Hemera"
             COMMAND "${CMAKE_COMMAND}" -E copy_directory
                     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/toolbar"
                     "${HEMERA_STAGE_ROOT}/${HEMERA_APP_DIRECTORY}/icons/toolbar"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/assets/hunspell"
+                    "${HEMERA_STAGE_ROOT}/${HEMERA_APP_DIRECTORY}/data/hunspell"
             COMMAND "${CMAKE_COMMAND}" -E copy "${HEMERA_PACKAGEINFO_PATH}" "${HEMERA_STAGE_ROOT}/.PackageInfo"
             COMMAND "${HEMERA_PACKAGE_EXECUTABLE}" create -C "${HEMERA_STAGE_ROOT}" "${HEMERA_HPKG_PATH}"
             DEPENDS Hemera
@@ -91,3 +105,4 @@ endif()
 
 install(TARGETS Hemera DESTINATION apps/Hemera)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/toolbar" DESTINATION apps/Hemera/icons)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/hunspell" DESTINATION apps/Hemera/data)

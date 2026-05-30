@@ -10,18 +10,26 @@ port can evolve independently.
 - `src/hermes_port/core/`: portable app-owned interfaces and bootstrap implementations.
 - `src/hermes_port/haiku/`: native Haiku shell skeleton and future Haiku adapters.
 - `tests/`: lightweight regression coverage for the new portable seams.
-- `third_party/`: dependency submodules/checkouts for `Hermes-Paige`, `OpenSSL`, and `Hunspell`.
+- `third_party/`: optional pinned dependency submodules/checkouts for `Hermes-Paige`, `OpenSSL`,
+  `Hunspell`, and `krb5`.
 - `legacy/eudora-drop/`: ignored archive of the original Eudora source/materials.
 
 ## Dependencies
 
-The intended dependency model is Git submodules:
+The dependency record stays in Git submodules:
 
 - `third_party/Hermes-Paige`
 - `third_party/openssl`
 - `third_party/hunspell`
+- `third_party/krb5`
 
-Run [`scripts/bootstrap_dependencies.sh`](/Users/nick/hermes-hemera/scripts/bootstrap_dependencies.sh) after the repository is initialized to add or refresh those checkouts.
+The normal build no longer requires those checkout trees to exist under the repo root.
+`cmake -S . -B build` will prefer system-installed libraries and then fetch pinned source
+trees into `build/_deps/` when it needs a local dependency checkout.
+
+[`scripts/bootstrap_dependencies.sh`](/Users/nick/hermes-hemera/scripts/bootstrap_dependencies.sh)
+is still available as an optional prewarm/offline helper if you want repo-local submodule
+checkouts.
 
 ## Building
 
@@ -32,4 +40,21 @@ ctest --test-dir build
 ```
 
 On non-Haiku hosts this builds the portable core and tests. On Haiku, enabling
-`HERMES_BUILD_HAIKU_SHELL` also builds the native shell scaffold.
+`HERMES_BUILD_HAIKU_SHELL` also builds the native shell scaffold. Deleting `build/`
+is fine; rerunning the configure and build commands will recreate the build tree and any
+auto-fetched dependency sources it needs.
+
+## Releasing
+
+Use the rollout tool for Haiku package-manager submissions instead of editing the
+HaikuPorts recipe manually:
+
+```sh
+scripts/release_haiku_rollout.sh doctor
+scripts/release_haiku_rollout.sh release 1.0.0-rc1
+```
+
+The rollout tool lives in `tools/haiku_rollout/`, reads its own YAML config file, uploads
+the source tarball asset to the GitHub release, renders the recipe from
+`packaging/haikuports/mail-client/hemera/hemera.recipe.in`, and opens or updates the
+HaikuPorts PR.
