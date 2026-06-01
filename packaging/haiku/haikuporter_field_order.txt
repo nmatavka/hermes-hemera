@@ -1,0 +1,15 @@
+# Hemera HaikuPorts recipe field order.
+# Keep this aligned with the HaikuPorter template ordering used for mail-client/hemera.
+SUMMARY
+DESCRIPTION
+HOMEPAGE
+COPYRIGHT
+LICENSE
+REVISION
+SOURCE_URI
+CHECKSUM_SHA256
+ARCHITECTURES
+PROVIDES
+REQUIRES
+BUILD
+INSTALL

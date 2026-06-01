@@ -1,21 +1,16 @@
-github:
-  repo_owner: YOUR_GITHUB_OWNER
-  repo_name: hermes-hemera
-  release_tag_template: "v<version>"
-  asset_name_template: "hemera-<version>-source.tar.gz"
-  release_title_template: "Hemera <version>"
-  release_notes_path: "docs/release-notes/<version>.md"
-
 haikuports:
-  upstream_url: "https://github.com/haikuports/haikuports.git"
   fork_url: "git@github.com:YOUR_GITHUB_OWNER/haikuports.git"
-  fork_owner: YOUR_GITHUB_OWNER
+  fork_owner: "YOUR_GITHUB_OWNER"
   checkout_path: "../haikuports"
-  target_branch: "master"
-  port_path: "mail-client/hemera"
 
-haiku_preflight_commands:
-  - ["cmake", "-S", ".", "-B", "build", "-DHERMES_BUILD_HAIKU_SHELL=ON"]
-  - ["cmake", "--build", "build", "--target", "Hemera"]
-  - ["ctest", "--test-dir", "build", "--output-on-failure"]
-  - ["cmake", "--build", "build", "--target", "hemera_hpkg"]
+# Optional override if you publish Hemera from a repo owner other than the
+# checked-in manifest default:
+# github:
+#   repo_owner: "YOUR_GITHUB_OWNER"
+#
+# Optional override if you need a custom local Haiku preflight:
+# haiku_preflight_commands:
+#   - ["cmake", "-S", ".", "-B", "build", "-DHERMES_BUILD_HAIKU_SHELL=ON"]
+#   - ["cmake", "--build", "build", "--target", "Hemera"]
+#   - ["ctest", "--test-dir", "build", "--output-on-failure"]
+#   - ["cmake", "--build", "build", "--target", "hemera_hpkg"]

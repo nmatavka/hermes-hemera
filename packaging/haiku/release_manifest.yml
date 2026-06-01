@@ -1,0 +1,39 @@
+app_name: "Hemera"
+
+github:
+  repo_owner: "nmatavka"
+  repo_name: "hermes-hemera"
+
+release:
+  version: "1.0"
+  package_revision: "1"
+  tag_template: "v<version>"
+  asset_name_template: "hemera-<version>-source.tar.gz"
+  title_template: "Hemera <version>"
+  release_notes_path: "docs/release-notes/<version>.md"
+  archive_prefix_template: "hemera-<version>"
+
+haikuports:
+  upstream_url: "https://github.com/haikuports/haikuports.git"
+  target_branch: "master"
+  port_path: "mail-client/hemera"
+  branch_template: "hemera-<haikuports_version>"
+  pr_title_template: "hemera: add <package_version>"
+  pr_body_template: |
+    ## Summary
+
+    - add <app_name> <package_version>
+    - source asset: <source_uri>
+    - generated from <app_name> tag `<tag>`
+
+    ## Validation
+
+    - <app_name> rollout tool prepared the recipe and source tarball
+    - local Haiku preflight runs only when the rollout host is Haiku
+    - follow-up build/check results are tracked through this PR
+
+haiku_preflight_commands:
+  - ["cmake", "-S", ".", "-B", "build", "-DHERMES_BUILD_HAIKU_SHELL=ON"]
+  - ["cmake", "--build", "build", "--target", "Hemera"]
+  - ["ctest", "--test-dir", "build", "--output-on-failure"]
+  - ["cmake", "--build", "build", "--target", "hemera_hpkg"]

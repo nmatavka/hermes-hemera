@@ -1,0 +1,12 @@
+diff --git a/PGPLATFO/PGHAIKU.CPP b/PGPLATFO/PGHAIKU.CPP
+--- a/PGPLATFO/PGHAIKU.CPP
++++ b/PGPLATFO/PGHAIKU.CPP
+@@ -1,7 +1,8 @@
+-#include "PGMODERNNATIVE.H"
++#include "PGMODERNNATIVE.H"
++#include "PGDEFSTL.H"
+ 
+ #if defined(POSIX_PLATFORM) && defined(HAIKU_PLATFORM)
+ 
+ #include "MACHINE.H"
+ #include "PGOSUTL.H"

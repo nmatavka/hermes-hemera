@@ -3,8 +3,8 @@ defmodule HemeraHaikuRollout.Versioning do
     String.replace(version, "-", "~", global: false)
   end
 
-  def package_version(version) do
-    "#{to_haikuports(version)}-1"
+  def package_version(version, revision \\ "1") do
+    "#{to_haikuports(version)}-#{revision}"
   end
 
   def recipe_filename(version) do

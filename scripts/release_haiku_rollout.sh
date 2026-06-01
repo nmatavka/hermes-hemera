@@ -17,4 +17,4 @@ if [ ! -d deps/yaml_elixir ] || [ ! -d deps/jason ]; then
   mix deps.get
 fi
 
-exec mix run -e 'HemeraHaikuRollout.CLI.main(System.argv())' -- "$@"
+exec mix run -e 'HemeraHaikuRollout.CLI.main(System.argv())' -- "$@" --cwd "${REPO_ROOT}"

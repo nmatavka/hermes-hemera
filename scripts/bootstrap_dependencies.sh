@@ -4,8 +4,40 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 THIRD_PARTY_DIR="third_party"
+DEPENDENCY_REFS_FILE="${ROOT_DIR}/cmake/HermesDependencyRefs.env"
+PAIGE_PATCH_DIR="${ROOT_DIR}/cmake/patches/hermes-paige"
+
+if [ ! -f "${DEPENDENCY_REFS_FILE}" ]; then
+    echo "missing dependency ref manifest: ${DEPENDENCY_REFS_FILE}" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${DEPENDENCY_REFS_FILE}"
 
 mkdir -p "${ROOT_DIR}/${THIRD_PARTY_DIR}"
+
+apply_patchset() {
+    local absolute_path="$1"
+    local patch_dir="$2"
+
+    if [ ! -d "${patch_dir}" ]; then
+        return
+    fi
+
+    local patch_path
+    for patch_path in "${patch_dir}"/*.patch; do
+        if [ ! -f "${patch_path}" ]; then
+            continue
+        fi
+
+        if git -C "${absolute_path}" apply --reverse --check "${patch_path}" >/dev/null 2>&1; then
+            continue
+        fi
+
+        git -C "${absolute_path}" apply "${patch_path}"
+    done
+}
 
 ensure_checkout() {
     local name="$1"
@@ -26,6 +58,9 @@ ensure_checkout() {
 
         git -C "${absolute_path}" fetch --tags origin
         git -C "${absolute_path}" checkout "${checkout_ref}"
+        if [ "${name}" = "Hermes-Paige" ]; then
+            apply_patchset "${absolute_path}" "${PAIGE_PATCH_DIR}"
+        fi
         return
     fi
 
@@ -37,9 +72,13 @@ ensure_checkout() {
         git -C "${absolute_path}" fetch --tags origin
         git -C "${absolute_path}" checkout "${checkout_ref}"
     fi
+
+    if [ "${name}" = "Hermes-Paige" ]; then
+        apply_patchset "${absolute_path}" "${PAIGE_PATCH_DIR}"
+    fi
 }
 
-ensure_checkout "Hermes-Paige" "https://github.com/nmatavka/Hermes-Paige" "${THIRD_PARTY_DIR}/Hermes-Paige" "main" "main"
-ensure_checkout "openssl" "https://github.com/openssl/openssl" "${THIRD_PARTY_DIR}/openssl" "openssl-4.0.0"
-ensure_checkout "hunspell" "https://github.com/hunspell/hunspell" "${THIRD_PARTY_DIR}/hunspell" "v1.7.3"
-ensure_checkout "krb5" "https://github.com/krb5/krb5.git" "${THIRD_PARTY_DIR}/krb5" "krb5-1.22.2-final"
+ensure_checkout "Hermes-Paige" "${HEMERA_DEP_HERMES_PAIGE_REPOSITORY}" "${THIRD_PARTY_DIR}/Hermes-Paige" "${HEMERA_DEP_HERMES_PAIGE_REF}"
+ensure_checkout "openssl" "${HEMERA_DEP_OPENSSL_REPOSITORY}" "${THIRD_PARTY_DIR}/openssl" "${HEMERA_DEP_OPENSSL_REF}"
+ensure_checkout "hunspell" "${HEMERA_DEP_HUNSPELL_REPOSITORY}" "${THIRD_PARTY_DIR}/hunspell" "${HEMERA_DEP_HUNSPELL_REF}"
+ensure_checkout "krb5" "${HEMERA_DEP_KRB5_REPOSITORY}" "${THIRD_PARTY_DIR}/krb5" "${HEMERA_DEP_KRB5_REF}"

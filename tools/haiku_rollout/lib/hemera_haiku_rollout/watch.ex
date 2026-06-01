@@ -2,18 +2,22 @@ defmodule HemeraHaikuRollout.Watch do
   alias HemeraHaikuRollout.CommandError
   alias HemeraHaikuRollout.Executor
   alias HemeraHaikuRollout.GitHub
+  alias HemeraHaikuRollout.ReleaseContext
+  alias HemeraHaikuRollout.State
 
-  def run(config, identifier, opts \\ []) do
+  def run(workspace, identifier, opts \\ []) do
     executor = Keyword.get(opts, :executor, HemeraHaikuRollout.SystemExecutor)
     dry_run = Keyword.get(opts, :dry_run, false)
-    repo_slug = HemeraHaikuRollout.Config.haikuports_repo_slug(config)
+    version = Keyword.get(opts, :version, workspace.version)
+    context = ReleaseContext.build(workspace, version)
+    repo_slug = context.haikuports_repo_slug
 
     if dry_run do
       IO.puts("watch: gh pr checks #{identifier} --repo #{repo_slug} --watch")
       :ok
     else
       pr_number = GitHub.resolve_pr!(executor, repo_slug, identifier)
-      maybe_watch_checks!(executor, repo_slug, pr_number)
+      watch_result = maybe_watch_checks!(executor, repo_slug, pr_number)
       summary =
         Executor.run!(
           executor,
@@ -21,7 +25,17 @@ defmodule HemeraHaikuRollout.Watch do
           ["pr", "view", Integer.to_string(pr_number), "--repo", repo_slug, "--json", "url,state"]
         )
 
+      decoded_summary = Jason.decode!(summary.stdout)
+      State.put_step!(context, :watch_started, %{
+        status: "completed",
+        pr_number: pr_number,
+        pr_url: decoded_summary["url"],
+        pr_state: decoded_summary["state"],
+        watch_status: watch_result
+      })
+
       IO.write(summary.stdout)
+      decoded_summary
     end
   end
 
@@ -36,11 +50,11 @@ defmodule HemeraHaikuRollout.Watch do
 
     cond do
       result.status == 0 ->
-        :ok
+        "checks_completed"
 
       String.contains?(result.stdout, "no checks reported") ->
         IO.puts(String.trim(result.stdout))
-        :ok
+        "no_checks_reported"
 
       true ->
         raise CommandError,

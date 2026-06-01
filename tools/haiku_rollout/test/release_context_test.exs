@@ -1,32 +1,12 @@
 defmodule HemeraHaikuRollout.ReleaseContextTest do
   use ExUnit.Case, async: true
 
-  alias HemeraHaikuRollout.Config
   alias HemeraHaikuRollout.ReleaseContext
+  alias HemeraHaikuRollout.TestSupport.WorkspaceFactory
 
-  defp config do
-    {:ok, config} =
-      Config.from_map(
-        %{
-          "github" => %{
-            "repo_owner" => "nick",
-            "repo_name" => "hermes-hemera"
-          },
-          "haikuports" => %{
-            "upstream_url" => "https://github.com/haikuports/haikuports.git",
-            "fork_url" => "git@github.com:nick/haikuports.git",
-            "fork_owner" => "nick",
-            "checkout_path" => "vendor/haikuports"
-          }
-        },
-        "memory"
-      )
-
-    config
-  end
-
-  test "builds release naming and URLs" do
-    context = ReleaseContext.build(config(), "1.0.0-rc1")
+  test "builds release naming, paths, and pr text from the workspace manifest" do
+    workspace = WorkspaceFactory.workspace!()
+    context = ReleaseContext.build(workspace, "1.0.0-rc1")
 
     assert context.tag == "v1.0.0-rc1"
     assert context.asset_name == "hemera-1.0.0-rc1-source.tar.gz"
@@ -35,5 +15,6 @@ defmodule HemeraHaikuRollout.ReleaseContextTest do
     assert context.recipe_output_name == "hemera-1.0.0~rc1.recipe"
     assert context.pr_title == "hemera: add 1.0.0~rc1-1"
     assert context.pr_body =~ "Hemera 1.0.0~rc1-1"
+    assert context.state_path == Path.join(context.work_dir, "state.json")
   end
 end

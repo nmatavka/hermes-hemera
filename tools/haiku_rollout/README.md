@@ -1,13 +1,18 @@
 # Hemera Haiku Rollout
 
 This Mix tool automates Hemera release preparation for HaikuPorts.
+It follows the same broad operator shape as the other HERMES rollout tooling, but only for
+Hemera's single Haiku release path.
 
 It is a developer tool, not part of the Hemera app package. The tool:
 
 - validates local prerequisites with `doctor`
+- reports workspace/state progress with `status`
+- manages user-local overrides with `config status|set|unset`
 - builds and uploads a tagged source tarball release asset
 - renders the Hemera HaikuPorts recipe from `packaging/haikuports/mail-client/hemera/hemera.recipe.in`
-- updates a local HaikuPorts checkout, pushes a branch, opens a PR, and watches it
+- updates a local HaikuPorts checkout, pushes a branch, and prints the exact `gh pr create` handoff command
+- can `resume` an interrupted rollout from recorded state in `build/haiku_rollout/<version>/state.json`
 
 ## Prerequisites
 
@@ -25,27 +30,47 @@ On Haiku hosts, the optional local preflight also expects:
 
 ## Configuration
 
-Bootstrap a local config first:
+The rollout now uses two layers of configuration:
+
+- repo-owned release manifest: `packaging/haiku/release_manifest.yml`
+- user-local overrides: `~/.local/share/hemera_haiku_rollout/config.yml`
+
+The local override file is optional. If you want a scaffold, bootstrap it with:
 
 ```sh
 scripts/release_haiku_rollout.sh init
 ```
 
-That creates `config.yml` beside the tool's `config.example.yml`. Then fill in your real GitHub and HaikuPorts values.
+That copies `tools/haiku_rollout/config.example.yml` to your user-local config path.
+Only user-specific HaikuPorts and optional GitHub override values belong there.
 
-Required config includes:
+The repo-owned manifest is the source of truth for:
 
-- Hemera GitHub repo owner and name
-- release tag and asset naming templates
-- HaikuPorts upstream URL, fork URL, and fork owner
+- release version surfaces
+- tag/title/asset templates
+- release notes path
+- HaikuPorts target path and PR templates
+- Haiku-only preflight defaults
+
+The local override file is only for user-specific values:
+
+- optional GitHub repo owner override
+- HaikuPorts fork URL
+- HaikuPorts fork owner
 - local HaikuPorts checkout path
-- target branch and target port path
-- optional Haiku-only local preflight command overrides
+- optional Haiku-only preflight command overrides
 
-You can override the config path with:
+You can override the local config path with:
 
 ```sh
 HEMERA_HAIKU_ROLLOUT_CONFIG=/abs/path/to/config.yml
+```
+
+You can also point the tool at a different checkout or manifest:
+
+```sh
+scripts/release_haiku_rollout.sh doctor --cwd /path/to/hermes-hemera
+scripts/release_haiku_rollout.sh doctor --manifest /path/to/release_manifest.yml
 ```
 
 ## Usage
@@ -55,7 +80,11 @@ From the repository root:
 ```sh
 scripts/release_haiku_rollout.sh init
 scripts/release_haiku_rollout.sh doctor
+scripts/release_haiku_rollout.sh status
+scripts/release_haiku_rollout.sh config status
+scripts/release_haiku_rollout.sh config set haikuports.fork_owner your-github-user
 scripts/release_haiku_rollout.sh release 1.0
+scripts/release_haiku_rollout.sh resume 1.0
 scripts/release_haiku_rollout.sh watch 1234
 ```
 
@@ -73,11 +102,19 @@ scripts/release_haiku_rollout.sh release 1.0 --dry-run
 2. reuses or creates the configured git tag
 3. builds a source tarball from the tagged tree
 4. creates or updates the GitHub release and uploads the tarball asset
-5. computes the tarball SHA-256 and renders the HaikuPorts recipe
+5. computes the tarball SHA-256 and validates the rendered HaikuPorts recipe ordering
 6. clones or refreshes the local HaikuPorts checkout and resets its target branch from upstream
 7. writes the finished port tree into `mail-client/hemera`
-8. commits, pushes, and opens or updates the HaikuPorts PR
-9. watches the server-side PR checks
+8. commits and pushes the HaikuPorts branch
+9. prints the exact `gh pr create` command and the follow-up watch command
+
+If the managed HaikuPorts branch already exists on your fork at a different commit, the rollout
+stops before push and prints the local SHA, remote SHA, and manual recovery commands instead of
+overwriting the remote branch automatically.
+
+`resume <version>` reuses recorded rollout state, skips already-completed early steps when their
+recorded outputs are still present, and re-checks whether the HaikuPorts branch already has an open
+PR before printing another handoff command.
 
 When the tool runs on Haiku, it inserts the local Hemera configure/build/test/HPKG preflight before
 the HaikuPorts branch and PR steps. On other hosts, that preflight is skipped and the flow relies on

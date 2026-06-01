@@ -65,6 +65,11 @@ target_link_libraries(
         hermes::port_paige
 )
 
+add_dependencies(
+    hermes_port_tests
+    hermes_sample_status_plugin
+)
+
 target_compile_definitions(
     hermes_port_tests
     PRIVATE

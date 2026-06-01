@@ -1,46 +1,42 @@
 defmodule HemeraHaikuRollout.DoctorTest do
   use ExUnit.Case, async: false
 
-  alias HemeraHaikuRollout.Config
   alias HemeraHaikuRollout.Doctor
-  alias HemeraHaikuRollout.TestSupport.FakeExecutor
+  alias HemeraHaikuRollout.TestSupport.{FakeExecutor, WorkspaceFactory}
 
-  defp config do
-    checkout = Path.join(System.tmp_dir!(), "haikuports-checkout")
+  defp workspace do
+    checkout = Path.join(System.tmp_dir!(), "haikuports-checkout-doctor")
     File.mkdir_p!(Path.join(checkout, ".git"))
 
-    {:ok, config} =
-      Config.from_map(
-        %{
-          "github" => %{
-            "repo_owner" => "nick",
-            "repo_name" => "hermes-hemera"
-          },
-          "haikuports" => %{
-            "upstream_url" => "https://github.com/haikuports/haikuports.git",
-            "fork_url" => "git@github.com:nick/haikuports.git",
-            "fork_owner" => "nick",
-            "checkout_path" => checkout
-          }
-        },
-        "memory"
+    config_path =
+      WorkspaceFactory.local_config_file!(
+        """
+        github:
+          repo_owner: "nick"
+        haikuports:
+          fork_url: "git@github.com:nick/haikuports.git"
+          fork_owner: "nick"
+          checkout_path: "#{checkout}"
+        """
       )
 
-    config
+    WorkspaceFactory.workspace!(local_config: config_path)
   end
 
-  test "doctor validates git and gh state with a fake executor" do
+  test "doctor validates gh auth, manifest, and checkout remotes with a fake executor" do
     {:ok, agent} =
       FakeExecutor.start_link([
         %{program: "gh", args: ["auth", "status"], stdout: "ok\n"},
+        %{program: "gh", args: ["api", "user"], stdout: ~s({"login":"nick"})},
+        %{program: "git", args: ["remote", "get-url", "origin"], stdout: "git@github.com:nick/haikuports.git\n"},
         %{program: "git", args: ["status", "--porcelain"], stdout: ""},
         %{program: "git", args: ["status", "--porcelain"], stdout: ""},
         %{program: "git", args: ["remote", "get-url", "origin"], stdout: "git@github.com:nick/haikuports.git\n"},
         %{program: "git", args: ["remote", "get-url", "upstream"], stdout: "https://github.com/haikuports/haikuports.git\n"}
       ])
 
-    Doctor.run(config(), executor: {FakeExecutor, agent})
+    Doctor.run(workspace(), executor: {FakeExecutor, agent})
 
-    assert length(FakeExecutor.commands(agent)) == 5
+    assert length(FakeExecutor.commands(agent)) == 7
   end
 end

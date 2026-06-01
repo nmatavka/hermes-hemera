@@ -1,34 +1,17 @@
 defmodule HemeraHaikuRollout.GitHubTest do
   use ExUnit.Case, async: false
 
-  alias HemeraHaikuRollout.Config
   alias HemeraHaikuRollout.GitHub
   alias HemeraHaikuRollout.ReleaseContext
-  alias HemeraHaikuRollout.TestSupport.FakeExecutor
+  alias HemeraHaikuRollout.TestSupport.{FakeExecutor, WorkspaceFactory}
 
-  defp config do
-    {:ok, config} =
-      Config.from_map(
-        %{
-          "github" => %{
-            "repo_owner" => "nick",
-            "repo_name" => "hermes-hemera"
-          },
-          "haikuports" => %{
-            "upstream_url" => "https://github.com/haikuports/haikuports.git",
-            "fork_url" => "git@github.com:nick/haikuports.git",
-            "fork_owner" => "nick",
-            "checkout_path" => "vendor/haikuports"
-          }
-        },
-        "memory"
-      )
-
-    config
+  defp context(version \\ "1.0.0-rc1") do
+    workspace = WorkspaceFactory.workspace!()
+    ReleaseContext.build(workspace, version)
   end
 
   test "updates an existing release instead of recreating it" do
-    context = ReleaseContext.build(config(), "1.0.0-rc1")
+    context = context()
 
     {:ok, agent} =
       FakeExecutor.start_link([
@@ -38,17 +21,39 @@ defmodule HemeraHaikuRollout.GitHubTest do
           stdout: ""},
         %{program: "gh",
           args: ["release", "upload", context.tag, context.artifact_path, "--clobber", "--repo", context.repo_slug],
-          stdout: ""}
+          stdout: ""},
+        %{program: "gh",
+          args: ["api", "repos/#{context.repo_slug}/releases/tags/#{URI.encode(context.tag, &URI.char_unreserved?/1)}"],
+          stdout: ~s({"html_url":"https://example.test/release","assets":[{"name":"#{context.asset_name}","browser_download_url":"https://example.test/asset.tar.gz"}]})}
       ])
 
-    GitHub.ensure_release!({FakeExecutor, agent}, context, "deadbeef")
+    result = GitHub.ensure_release!({FakeExecutor, agent}, context, "deadbeef")
 
-    assert Enum.map(FakeExecutor.commands(agent), & &1.program) == ["gh", "gh", "gh"]
+    assert result.url == "https://example.test/release"
+    assert result.asset_url == "https://example.test/asset.tar.gz"
+  end
+
+  test "resolves the current GitHub login through gh api user" do
+    {:ok, agent} =
+      FakeExecutor.start_link([
+        %{program: "gh", args: ["api", "user"], stdout: ~s({"login":"nick"})}
+      ])
+
+    assert GitHub.current_login({FakeExecutor, agent}) == "nick"
+  end
+
+  test "renders a guided gh pr create command" do
+    context = context("1.0")
+    command = GitHub.pull_request_command(context)
+
+    assert command =~ "gh pr create"
+    assert command =~ "--repo 'haikuports/haikuports'"
+    assert command =~ "--head 'nick:hemera-1.0'"
+    assert command =~ "--title 'hemera: add 1.0-1'"
   end
 
   test "reuses and edits an existing pull request" do
-    config = config()
-    context = ReleaseContext.build(config, "1.0.0-rc1")
+    context = context()
 
     {:ok, agent} =
       FakeExecutor.start_link([
@@ -63,7 +68,7 @@ defmodule HemeraHaikuRollout.GitHubTest do
             "--json",
             "number,url,headRefName,headRepositoryOwner"
           ],
-          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"hemera-1.0.0~rc1","headRepositoryOwner":{"login":"nick"}}])},
+          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"#{context.haikuports_branch}","headRepositoryOwner":{"login":"nick"}}])},
         %{program: "gh",
           args: [
             "pr",
@@ -79,12 +84,13 @@ defmodule HemeraHaikuRollout.GitHubTest do
           stdout: ""}
       ])
 
-    assert GitHub.ensure_pull_request!({FakeExecutor, agent}, config, context) == "https://example.test/pr/17"
+    result = GitHub.ensure_pull_request!({FakeExecutor, agent}, context)
+    assert result.url == "https://example.test/pr/17"
+    assert result.number == 17
   end
 
   test "recovers when gh pr create reports an existing pull request" do
-    config = config()
-    context = ReleaseContext.build(config, "1.0.0-rc1")
+    context = context()
 
     {:ok, agent} =
       FakeExecutor.start_link([
@@ -107,9 +113,9 @@ defmodule HemeraHaikuRollout.GitHubTest do
             "--repo",
             context.haikuports_repo_slug,
             "--base",
-            config.haikuports_target_branch,
+            context.haikuports_target_branch,
             "--head",
-            "#{config.haikuports_fork_owner}:#{context.haikuports_branch}",
+            "#{context.haikuports_fork_owner}:#{context.haikuports_branch}",
             "--title",
             context.pr_title,
             "--body",
@@ -128,7 +134,7 @@ defmodule HemeraHaikuRollout.GitHubTest do
             "--json",
             "number,url,headRefName,headRepositoryOwner"
           ],
-          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"hemera-1.0.0~rc1","headRepositoryOwner":{"login":"nick"}}])},
+          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"#{context.haikuports_branch}","headRepositoryOwner":{"login":"nick"}}])},
         %{program: "gh",
           args: [
             "pr",
@@ -144,6 +150,8 @@ defmodule HemeraHaikuRollout.GitHubTest do
           stdout: ""}
       ])
 
-    assert GitHub.ensure_pull_request!({FakeExecutor, agent}, config, context) == "https://example.test/pr/17"
+    result = GitHub.ensure_pull_request!({FakeExecutor, agent}, context)
+    assert result.url == "https://example.test/pr/17"
+    assert result.number == 17
   end
 end

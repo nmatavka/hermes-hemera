@@ -445,13 +445,32 @@ HERMES_TEST(DependencyConfigurationDefaultsToAutoFetchAndBundledHunspellAssets) 
     HERMES_CHECK(dependencies_input.good());
     const std::string dependencies_contents((std::istreambuf_iterator<char>(dependencies_input)),
                                             std::istreambuf_iterator<char>());
+    const auto manifest_path =
+        std::filesystem::path(HERMES_SOURCE_ROOT) / "cmake" / "HermesDependencyRefs.env";
+    std::ifstream manifest_input(manifest_path);
+    HERMES_CHECK(manifest_input.good());
+    const std::string manifest_contents((std::istreambuf_iterator<char>(manifest_input)),
+                                        std::istreambuf_iterator<char>());
     HERMES_CHECK(dependencies_contents.find("option(HERMES_PREFER_SYSTEM_DEPENDENCIES") !=
                  std::string::npos);
     HERMES_CHECK(dependencies_contents.find("option(HERMES_ENABLE_DEPENDENCY_FETCH") !=
                  std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("option(HERMES_BUILD_FETCHED_DEPENDENCIES") !=
+                 std::string::npos);
     HERMES_CHECK(dependencies_contents.find("HERMES_DEPENDENCY_FETCH_ROOT") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("HERMES_DEPENDENCY_REF_FILE") != std::string::npos);
     HERMES_CHECK(dependencies_contents.find("FetchContent_Declare(") != std::string::npos);
     HERMES_CHECK(dependencies_contents.find("Hemera: fetching") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("hemera_stage_hunspell_from_root") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("hemera_stage_krb5_from_root") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("hemera_stage_openssl_from_root") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("WebView.h") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("haikuwebkit_devel") != std::string::npos);
+    HERMES_CHECK(dependencies_contents.find("367c01f1510304f90c7c944e2e356bebe8eef040") == std::string::npos);
+    HERMES_CHECK(manifest_contents.find("HEMERA_DEP_HERMES_PAIGE_REF=cc543e957afb61d054862021f589dc75f2c8406c") !=
+                 std::string::npos);
+    HERMES_CHECK(manifest_contents.find("HEMERA_DEP_KRB5_REF=krb5-1.22.2-final") !=
+                 std::string::npos);
 
     const auto compose_path =
         std::filesystem::path(HERMES_SOURCE_ROOT) / "src" / "hermes_port" / "haiku" / "HaikuComposeWindow.cpp";

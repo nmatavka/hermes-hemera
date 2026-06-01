@@ -26,6 +26,9 @@ The dependency record stays in Git submodules:
 The normal build no longer requires those checkout trees to exist under the repo root.
 `cmake -S . -B build` will prefer system-installed libraries and then fetch pinned source
 trees into `build/_deps/` when it needs a local dependency checkout.
+The shared pinned refs for both paths live in
+`cmake/HermesDependencyRefs.env`, so the clean-clone configure path and the optional
+bootstrap path use the same repositories and revisions.
 
 [`scripts/bootstrap_dependencies.sh`](/Users/nick/hermes-hemera/scripts/bootstrap_dependencies.sh)
 is still available as an optional prewarm/offline helper if you want repo-local submodule
@@ -51,8 +54,13 @@ HaikuPorts recipe manually:
 
 ```sh
 scripts/release_haiku_rollout.sh doctor
+scripts/release_haiku_rollout.sh status
 scripts/release_haiku_rollout.sh release 1.0
 ```
+
+The rollout tool now reads the repo-owned release manifest at
+`packaging/haiku/release_manifest.yml` plus user-local overrides in
+`~/.local/share/hemera_haiku_rollout/config.yml`.
 
 The rollout tool lives in `tools/haiku_rollout/`, reads its own YAML config file, uploads
 the source tarball asset to the GitHub release, renders the recipe from

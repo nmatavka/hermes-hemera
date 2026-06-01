@@ -42,15 +42,46 @@ HERMES_TEST(TrackedHaikuReadmeDocumentsAutoFetchAndOptionalBootstrap) {
                  std::string::npos);
 }
 
-HERMES_TEST(TrackedBootstrapScriptStillPrefetchesPinnedKrb5Checkout) {
-    const auto script_path = std::filesystem::path(HERMES_SOURCE_ROOT) / "scripts" / "bootstrap_dependencies.sh";
-    std::ifstream input(script_path);
-    HERMES_CHECK(input.good());
+HERMES_TEST(TrackedDependencyBootstrapUsesSharedManifestAndPaigePatchset) {
+    const auto source_root = std::filesystem::path(HERMES_SOURCE_ROOT);
+    const auto script_path = source_root / "scripts" / "bootstrap_dependencies.sh";
+    const auto manifest_path = source_root / "cmake" / "HermesDependencyRefs.env";
+    const auto dependency_cmake_path = source_root / "cmake" / "HermesDependencies.cmake";
+    const auto paige_patch_path =
+        source_root / "cmake" / "patches" / "hermes-paige" / "0001-haiku-include-pgdefstl.patch";
+    std::ifstream script_input(script_path);
+    std::ifstream manifest_input(manifest_path);
+    std::ifstream dependency_cmake_input(dependency_cmake_path);
+    std::ifstream paige_patch_input(paige_patch_path);
+    HERMES_CHECK(script_input.good());
+    HERMES_CHECK(manifest_input.good());
+    HERMES_CHECK(dependency_cmake_input.good());
+    HERMES_CHECK(paige_patch_input.good());
 
-    const std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    HERMES_CHECK(contents.find("https://github.com/krb5/krb5.git") != std::string::npos);
-    HERMES_CHECK(contents.find("THIRD_PARTY_DIR}/krb5") != std::string::npos);
-    HERMES_CHECK(contents.find("krb5-1.22.2-final") != std::string::npos);
+    const std::string script_contents((std::istreambuf_iterator<char>(script_input)),
+                                      std::istreambuf_iterator<char>());
+    const std::string manifest_contents((std::istreambuf_iterator<char>(manifest_input)),
+                                        std::istreambuf_iterator<char>());
+    const std::string dependency_cmake_contents((std::istreambuf_iterator<char>(dependency_cmake_input)),
+                                                std::istreambuf_iterator<char>());
+    const std::string paige_patch_contents((std::istreambuf_iterator<char>(paige_patch_input)),
+                                           std::istreambuf_iterator<char>());
+
+    HERMES_CHECK(script_contents.find("source \"${DEPENDENCY_REFS_FILE}\"") != std::string::npos);
+    HERMES_CHECK(script_contents.find("apply_patchset") != std::string::npos);
+    HERMES_CHECK(script_contents.find("HEMERA_DEP_KRB5_REF") != std::string::npos);
+    HERMES_CHECK(manifest_contents.find("HEMERA_DEP_HERMES_PAIGE_REF=cc543e957afb61d054862021f589dc75f2c8406c") !=
+                 std::string::npos);
+    HERMES_CHECK(manifest_contents.find("HEMERA_DEP_OPENSSL_REF=openssl-4.0.0") !=
+                 std::string::npos);
+    HERMES_CHECK(manifest_contents.find("HEMERA_DEP_HUNSPELL_REF=v1.7.3") !=
+                 std::string::npos);
+    HERMES_CHECK(manifest_contents.find("HEMERA_DEP_KRB5_REF=krb5-1.22.2-final") !=
+                 std::string::npos);
+    HERMES_CHECK(manifest_contents.find("367c01f1510304f90c7c944e2e356bebe8eef040") == std::string::npos);
+    HERMES_CHECK(dependency_cmake_contents.find("HERMES_DEPENDENCY_REF_FILE") != std::string::npos);
+    HERMES_CHECK(dependency_cmake_contents.find("hemera_apply_patchset") != std::string::npos);
+    HERMES_CHECK(paige_patch_contents.find("PGDEFSTL.H") != std::string::npos);
 }
 
 HERMES_TEST(TrackedShellFidelityMatrixCapturesWindowsWorkflowAudit) {
@@ -85,7 +116,9 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     const auto source_root = std::filesystem::path(HERMES_SOURCE_ROOT);
     const auto rdef_path = source_root / "packaging" / "haiku" / "Hemera.rdef.in";
     const auto package_info_path = source_root / "packaging" / "haiku" / "Hemera.PackageInfo.in";
+    const auto release_manifest_path = source_root / "packaging" / "haiku" / "release_manifest.yml";
     const auto packaging_readme_path = source_root / "packaging" / "haiku" / "README.md";
+    const auto field_order_path = source_root / "packaging" / "haiku" / "haikuporter_field_order.txt";
     const auto recipe_path = source_root / "packaging" / "haikuports" / "mail-client" / "hemera" /
                              "hemera.recipe.in";
     const auto rollout_tool_dir = source_root / "tools" / "haiku_rollout";
@@ -103,7 +136,9 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
 
     HERMES_CHECK(std::filesystem::exists(rdef_path));
     HERMES_CHECK(std::filesystem::exists(package_info_path));
+    HERMES_CHECK(std::filesystem::exists(release_manifest_path));
     HERMES_CHECK(std::filesystem::exists(packaging_readme_path));
+    HERMES_CHECK(std::filesystem::exists(field_order_path));
     HERMES_CHECK(std::filesystem::exists(recipe_path));
     HERMES_CHECK(std::filesystem::exists(rollout_tool_dir));
     HERMES_CHECK(std::filesystem::exists(rollout_readme_path));
@@ -117,7 +152,9 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
 
     std::ifstream rdef_input(rdef_path);
     std::ifstream package_input(package_info_path);
+    std::ifstream release_manifest_input(release_manifest_path);
     std::ifstream packaging_readme_input(packaging_readme_path);
+    std::ifstream field_order_input(field_order_path);
     std::ifstream recipe_input(recipe_path);
     std::ifstream rollout_readme_input(rollout_readme_path);
     std::ifstream rollout_mix_input(rollout_mix_path);
@@ -126,7 +163,9 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     std::ifstream release_notes_input(release_notes_path);
     HERMES_CHECK(rdef_input.good());
     HERMES_CHECK(package_input.good());
+    HERMES_CHECK(release_manifest_input.good());
     HERMES_CHECK(packaging_readme_input.good());
+    HERMES_CHECK(field_order_input.good());
     HERMES_CHECK(recipe_input.good());
     HERMES_CHECK(rollout_readme_input.good());
     HERMES_CHECK(rollout_mix_input.good());
@@ -138,8 +177,12 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
                                     std::istreambuf_iterator<char>());
     const std::string package_contents((std::istreambuf_iterator<char>(package_input)),
                                        std::istreambuf_iterator<char>());
+    const std::string release_manifest_contents((std::istreambuf_iterator<char>(release_manifest_input)),
+                                                std::istreambuf_iterator<char>());
     const std::string packaging_readme_contents((std::istreambuf_iterator<char>(packaging_readme_input)),
                                                 std::istreambuf_iterator<char>());
+    const std::string field_order_contents((std::istreambuf_iterator<char>(field_order_input)),
+                                           std::istreambuf_iterator<char>());
     const std::string recipe_contents((std::istreambuf_iterator<char>(recipe_input)),
                                       std::istreambuf_iterator<char>());
     const std::string rollout_readme_contents((std::istreambuf_iterator<char>(rollout_readme_input)),
@@ -164,11 +207,25 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     HERMES_CHECK(package_contents.find("app:Hemera = @HEMERA_HAIKU_PACKAGE_VERSION@") !=
                  std::string::npos);
     HERMES_CHECK(package_contents.find("release candidate") == std::string::npos);
+    HERMES_CHECK(release_manifest_contents.find("release_manifest") == std::string::npos);
+    HERMES_CHECK(release_manifest_contents.find("version: \"1.0\"") != std::string::npos);
+    HERMES_CHECK(release_manifest_contents.find("branch_template: \"hemera-<haikuports_version>\"") !=
+                 std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("Hemera") != std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("application/x-vnd.hermes-hemera") !=
                  std::string::npos);
+    HERMES_CHECK(packaging_readme_contents.find("release_manifest.yml") != std::string::npos);
+    HERMES_CHECK(packaging_readme_contents.find("HaikuPorter field ordering file") !=
+                 std::string::npos);
+    HERMES_CHECK(packaging_readme_contents.find("guided `gh pr create` handoff") !=
+                 std::string::npos);
+    HERMES_CHECK(packaging_readme_contents.find("managed fork branch has diverged remotely") !=
+                 std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("scripts/release_haiku_rollout.sh") !=
                  std::string::npos);
+    HERMES_CHECK(packaging_readme_contents.find("resume 1.0") != std::string::npos);
+    HERMES_CHECK(field_order_contents.find("SUMMARY") != std::string::npos);
+    HERMES_CHECK(field_order_contents.find("INSTALL") != std::string::npos);
     HERMES_CHECK(recipe_contents.find("SUMMARY=\"Hemera mail client\"") != std::string::npos);
     HERMES_CHECK(recipe_contents.find("release candidate") == std::string::npos);
     HERMES_CHECK(recipe_contents.find("HOMEPAGE=\"https://github.com/@HEMERA_REPO_SLUG@\"") !=
@@ -177,9 +234,17 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     HERMES_CHECK(rollout_readme_contents.find("scripts/release_haiku_rollout.sh") !=
                  std::string::npos);
     HERMES_CHECK(rollout_readme_contents.find("HaikuPorts") != std::string::npos);
+    HERMES_CHECK(rollout_readme_contents.find("release_manifest.yml") != std::string::npos);
+    HERMES_CHECK(rollout_readme_contents.find("config status") != std::string::npos);
+    HERMES_CHECK(rollout_readme_contents.find("resume <version>") != std::string::npos);
+    HERMES_CHECK(rollout_readme_contents.find("state.json") != std::string::npos);
+    HERMES_CHECK(rollout_readme_contents.find("exact `gh pr create` handoff command") !=
+                 std::string::npos);
+    HERMES_CHECK(rollout_readme_contents.find("stops before push") != std::string::npos);
     HERMES_CHECK(rollout_mix_contents.find("app: :hemera_haiku_rollout") != std::string::npos);
     HERMES_CHECK(rollout_launcher_contents.find("tools/haiku_rollout") != std::string::npos);
     HERMES_CHECK(rollout_launcher_contents.find("mix deps.get") != std::string::npos);
+    HERMES_CHECK(rollout_launcher_contents.find("--cwd \"${REPO_ROOT}\"") != std::string::npos);
     HERMES_CHECK(notice_contents.find("Hemera") != std::string::npos);
     HERMES_CHECK(notice_contents.find("retrosmart-icon-theme") != std::string::npos);
     HERMES_CHECK(release_notes_contents.find("# Hemera 1.0") != std::string::npos);

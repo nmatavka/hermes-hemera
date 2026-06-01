@@ -1,66 +1,66 @@
 defmodule HemeraHaikuRollout.ConfigTest do
   use ExUnit.Case, async: true
 
-  alias HemeraHaikuRollout.Config
+  alias HemeraHaikuRollout.{LocalConfig, Manifest, Workspace}
+  alias HemeraHaikuRollout.TestSupport.WorkspaceFactory
 
-  test "loads required config and applies defaults" do
-    map = %{
-      "github" => %{
-        "repo_owner" => "nick",
-        "repo_name" => "hermes-hemera"
-      },
-      "haikuports" => %{
-        "upstream_url" => "https://github.com/haikuports/haikuports.git",
-        "fork_url" => "git@github.com:nick/haikuports.git",
-        "fork_owner" => "nick",
-        "checkout_path" => "vendor/haikuports"
-      }
-    }
+  test "manifest loads the checked-in release defaults" do
+    manifest = Manifest.load!(HemeraHaikuRollout.default_manifest_path())
 
-    {:ok, config} = Config.from_map(map, "memory")
-
-    assert config.release_tag_template == "v<version>"
-    assert config.asset_name_template == "hemera-<version>-source.tar.gz"
-    assert config.haikuports_target_branch == "master"
-    assert config.haikuports_port_path == "mail-client/hemera"
-    assert Path.type(config.haikuports_checkout_path) == :absolute
+    assert manifest.repo_owner == "nmatavka"
+    assert manifest.repo_name == "hermes-hemera"
+    assert manifest.release_version == "1.0"
+    assert manifest.haikuports_target_branch == "master"
+    assert manifest.haikuports_port_path == "mail-client/hemera"
   end
 
-  test "rejects missing required config fields" do
-    assert {:error, message} = Config.from_map(%{}, "memory")
-    assert message =~ "github"
-  end
-
-  test "rejects placeholder config values before any remote action" do
-    map = %{
-      "github" => %{
-        "repo_owner" => "YOUR_GITHUB_OWNER",
-        "repo_name" => "hermes-hemera"
-      },
-      "haikuports" => %{
-        "upstream_url" => "https://github.com/haikuports/haikuports.git",
-        "fork_url" => "git@github.com:YOUR_GITHUB_OWNER/haikuports.git",
-        "fork_owner" => "YOUR_GITHUB_OWNER",
-        "checkout_path" => "vendor/haikuports"
-      }
-    }
-
-    assert {:error, message} = Config.from_map(map, "memory")
-    assert message =~ "placeholder value"
-    assert message =~ "github.repo_owner"
-  end
-
-  test "init copies the example config and does not overwrite existing config" do
+  test "local config init copies the example file and preserves existing content" do
     tmp_dir = Path.join(System.tmp_dir!(), "hemera-haiku-rollout-config-#{System.unique_integer([:positive])}")
     config_path = Path.join(tmp_dir, "config.yml")
     File.rm_rf!(tmp_dir)
 
-    assert {:ok, :created, ^config_path} = Config.init(config_path)
+    assert {:ok, :created, ^config_path} = LocalConfig.init(config_path)
     assert File.exists?(config_path)
     assert File.read!(config_path) == File.read!(HemeraHaikuRollout.example_config_path())
 
-    File.write!(config_path, "custom: true\n")
-    assert {:ok, :exists, ^config_path} = Config.init(config_path)
-    assert File.read!(config_path) == "custom: true\n"
+    File.write!(config_path, "github:\n  repo_owner: custom\n")
+    assert {:ok, :exists, ^config_path} = LocalConfig.init(config_path)
+    assert File.read!(config_path) == "github:\n  repo_owner: custom\n"
+  end
+
+  test "local config set and unset round-trips scalar overrides" do
+    config_path = WorkspaceFactory.local_config_file!("{}\n")
+
+    LocalConfig.set!("haikuports.fork_owner", "nick", config_path)
+    LocalConfig.set!("github.repo_owner", "fork-owner", config_path)
+    loaded = LocalConfig.load(config_path)
+
+    assert get_in(loaded, ["haikuports", "fork_owner"]) == "nick"
+    assert get_in(loaded, ["github", "repo_owner"]) == "fork-owner"
+
+    LocalConfig.unset!("github.repo_owner", config_path)
+    loaded = LocalConfig.load(config_path)
+    refute get_in(loaded, ["github", "repo_owner"])
+    assert get_in(loaded, ["haikuports", "fork_owner"]) == "nick"
+  end
+
+  test "workspace merges manifest defaults with local overrides and resolves checkout paths" do
+    config_path =
+      WorkspaceFactory.local_config_file!(
+        """
+        github:
+          repo_owner: "nick"
+        haikuports:
+          fork_url: "git@github.com:nick/haikuports.git"
+          fork_owner: "nick"
+          checkout_path: "../haikuports"
+        """
+      )
+
+    workspace = Workspace.load!(WorkspaceFactory.repo_root(), local_config: config_path)
+
+    assert workspace.version == "1.0"
+    assert workspace.manifest.repo_owner == "nick"
+    assert Path.type(workspace.manifest.haikuports_checkout_path) == :absolute
   end
 end
