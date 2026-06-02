@@ -12,7 +12,11 @@ The packaged app is named `Hemera`, while the Haiku app signature remains `appli
 For release work, use the rollout tool instead of editing recipes and checksums by hand. The tool
 also validates the Hemera recipe against the checked-in HaikuPorter field ordering file before
 submission, stops if the managed fork branch has diverged remotely, and only then hands off to a
-guided `gh pr create` handoff for the final HaikuPorts PR:
+guided `gh pr create` handoff for the final HaikuPorts PR.
+
+That handoff uses `gh pr create --editor` and does not inject PR body text, so the HaikuPorts
+contributor checklist template is expected to appear in the editor. If the template does not
+appear, abort without submitting and create the PR manually instead.
 
 ```sh
 scripts/release_haiku_rollout.sh doctor

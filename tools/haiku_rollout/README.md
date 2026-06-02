@@ -11,7 +11,7 @@ It is a developer tool, not part of the Hemera app package. The tool:
 - manages user-local overrides with `config status|set|unset`
 - builds and uploads a tagged source tarball release asset
 - renders the Hemera HaikuPorts recipe from `packaging/haikuports/mail-client/hemera/hemera.recipe.in`
-- updates a local HaikuPorts checkout, pushes a branch, and prints the exact `gh pr create` handoff command
+- updates a local HaikuPorts checkout, pushes a branch, and prints the exact `gh pr create` handoff command in a template-safe `--editor` mode
 - can `resume` an interrupted rollout from recorded state in `build/haiku_rollout/<version>/state.json`
 
 ## Prerequisites
@@ -49,7 +49,7 @@ The repo-owned manifest is the source of truth for:
 - release version surfaces
 - tag/title/asset templates
 - release notes path
-- HaikuPorts target path and PR templates
+- HaikuPorts target path, suggested PR title template, and optional PR handoff notes
 - Haiku-only preflight defaults
 
 The local override file is only for user-specific values:
@@ -106,7 +106,7 @@ scripts/release_haiku_rollout.sh release 1.0 --dry-run
 6. clones or refreshes the local HaikuPorts checkout and resets its target branch from upstream
 7. writes the finished port tree into `mail-client/hemera`
 8. commits and pushes the HaikuPorts branch
-9. prints the exact `gh pr create` command and the follow-up watch command
+9. prints the exact `gh pr create` handoff command, the suggested PR title, and the follow-up watch command
 
 If the managed HaikuPorts branch already exists on your fork at a different commit, the rollout
 stops before push and prints the local SHA, remote SHA, and manual recovery commands instead of
@@ -115,6 +115,10 @@ overwriting the remote branch automatically.
 `resume <version>` reuses recorded rollout state, skips already-completed early steps when their
 recorded outputs are still present, and re-checks whether the HaikuPorts branch already has an open
 PR before printing another handoff command.
+
+The rollout does not inject PR body text into `gh pr create`. HaikuPorts' own contributor template
+is expected to appear in the editor. If the checklist template does not appear, abort without
+submitting and create the PR manually so the template is preserved.
 
 When the tool runs on Haiku, it inserts the local Hemera configure/build/test/HPKG preflight before
 the HaikuPorts branch and PR steps. On other hosts, that preflight is skipped and the flow relies on

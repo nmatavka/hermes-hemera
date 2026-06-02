@@ -15,7 +15,7 @@ defmodule HemeraHaikuRollout.Manifest do
     :archive_prefix_template,
     :haikuports_branch_template,
     :haikuports_pr_title_template,
-    :haikuports_pr_body_template,
+    :haikuports_pr_notes_template,
     :haikuports_upstream_url,
     :haikuports_fork_url,
     :haikuports_fork_owner,
@@ -34,7 +34,7 @@ defmodule HemeraHaikuRollout.Manifest do
   @default_archive_prefix_template "hemera-<version>"
   @default_haikuports_branch_template "hemera-<haikuports_version>"
   @default_haikuports_pr_title_template "hemera: add <package_version>"
-  @default_haikuports_pr_body_template """
+  @default_haikuports_pr_notes_template """
   ## Summary
 
   - add <app_name> <package_version>
@@ -105,8 +105,12 @@ defmodule HemeraHaikuRollout.Manifest do
            string_or_default(haikuports, "branch_template", @default_haikuports_branch_template),
          haikuports_pr_title_template:
            string_or_default(haikuports, "pr_title_template", @default_haikuports_pr_title_template),
-         haikuports_pr_body_template:
-           string_or_default(haikuports, "pr_body_template", @default_haikuports_pr_body_template),
+         haikuports_pr_notes_template:
+           string_or_fallback(
+             haikuports,
+             ["pr_notes_template", "pr_body_template"],
+             @default_haikuports_pr_notes_template
+           ),
          haikuports_upstream_url: upstream_url,
          haikuports_fork_url: optional_string(haikuports, "fork_url"),
          haikuports_fork_owner: optional_string(haikuports, "fork_owner"),
@@ -163,6 +167,15 @@ defmodule HemeraHaikuRollout.Manifest do
       value when is_binary(value) and value != "" -> value
       _ -> default
     end
+  end
+
+  defp string_or_fallback(map, keys, default) when is_list(keys) do
+    Enum.find_value(keys, default, fn key ->
+      case Map.get(map, key) do
+        value when is_binary(value) and value != "" -> value
+        _ -> nil
+      end
+    end)
   end
 
   defp optional_string(map, key) do

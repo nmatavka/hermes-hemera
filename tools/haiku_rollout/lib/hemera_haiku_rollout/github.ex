@@ -94,35 +94,60 @@ defmodule HemeraHaikuRollout.GitHub do
     }
   end
 
-  def ensure_pull_request!(executor, context) do
-    case find_pull_request(executor, context) do
-      nil ->
-        create_pull_request!(executor, context)
-
-      pr ->
-        edit_pull_request!(executor, context, pr)
-    end
-  end
-
   def pull_request_command(context) do
     args = [
-      {"--repo", context.haikuports_repo_slug},
-      {"--base", context.haikuports_target_branch},
-      {"--head", "#{context.haikuports_fork_owner}:#{context.haikuports_branch}"},
-      {"--title", context.pr_title},
-      {"--body", context.pr_body}
+      "--editor",
+      "--repo #{Util.shell_escape(context.haikuports_repo_slug)}",
+      "--base #{Util.shell_escape(context.haikuports_target_branch)}",
+      "--head #{Util.shell_escape("#{context.haikuports_fork_owner}:#{context.haikuports_branch}")}"
     ]
 
     ["gh pr create \\"]
     |> Kernel.++(
       args
       |> Enum.with_index()
-      |> Enum.map(fn {{flag, value}, index} ->
+      |> Enum.map(fn {argument, index} ->
         suffix = if index == length(args) - 1, do: "", else: " \\"
-        "  #{flag} #{Util.shell_escape(value)}#{suffix}"
+        "  #{argument}#{suffix}"
       end)
     )
     |> Enum.join("\n")
+  end
+
+  def pull_request_template_warning do
+    "Confirm the HaikuPorts contributor checklist template appears in the editor. If it does not, abort without submitting and open the PR manually so the template is preserved."
+  end
+
+  def pull_request_handoff_markdown(context, pr_create_command, watch_command) do
+    """
+    # HaikuPorts PR Handoff
+
+    Run this command to open the PR in your editor:
+
+    ```sh
+    #{pr_create_command}
+    ```
+
+    Suggested PR title:
+
+    `#{context.suggested_pr_title}`
+
+    Optional rollout notes:
+
+    #{context.pr_notes}
+
+    Warning:
+
+    #{pull_request_template_warning()}
+
+    After the PR exists, watch it with:
+
+    ```sh
+    #{watch_command}
+    ```
+    """
+    |> String.trim()
+    |> Kernel.<>("\n")
   end
 
   def watch_command(repo_slug, pr_number) do
@@ -218,68 +243,6 @@ defmodule HemeraHaikuRollout.GitHub do
       )
 
     Jason.decode!(result.stdout)
-  end
-
-  defp create_pull_request!(executor, context) do
-    result =
-      try do
-        Executor.run!(
-          executor,
-          "gh",
-          [
-            "pr",
-            "create",
-            "--repo",
-            context.haikuports_repo_slug,
-            "--base",
-            context.haikuports_target_branch,
-            "--head",
-            "#{context.haikuports_fork_owner}:#{context.haikuports_branch}",
-            "--title",
-            context.pr_title,
-            "--body",
-            context.pr_body
-          ]
-        )
-      rescue
-        error in HemeraHaikuRollout.CommandError ->
-          if String.contains?(error.stdout, "already exists") do
-            case find_pull_request(executor, context) do
-              nil -> reraise error, __STACKTRACE__
-              pr -> {:existing, pr}
-            end
-          else
-            reraise error, __STACKTRACE__
-          end
-      end
-
-    case result do
-      {:existing, pr} -> edit_pull_request!(executor, context, pr)
-      command_result ->
-        url = String.trim(command_result.stdout)
-        pr = find_pull_request(executor, context) || %{}
-        %{url: url, number: pr["number"]}
-    end
-  end
-
-  defp edit_pull_request!(executor, context, pr) do
-    Executor.run!(
-      executor,
-      "gh",
-      [
-        "pr",
-        "edit",
-        Integer.to_string(pr["number"]),
-        "--repo",
-        context.haikuports_repo_slug,
-        "--title",
-        context.pr_title,
-        "--body",
-        context.pr_body
-      ]
-    )
-
-    %{url: pr["url"], number: pr["number"]}
   end
 
   defp fetch_release!(executor, repo_slug, tag) do

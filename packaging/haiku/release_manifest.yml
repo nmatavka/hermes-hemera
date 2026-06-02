@@ -19,7 +19,7 @@ haikuports:
   port_path: "mail-client/hemera"
   branch_template: "hemera-<haikuports_version>"
   pr_title_template: "hemera: add <package_version>"
-  pr_body_template: |
+  pr_notes_template: |
     ## Summary
 
     - add <app_name> <package_version>

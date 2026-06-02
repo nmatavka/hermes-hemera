@@ -15,6 +15,7 @@
 #include "hermes/MessageRenderer.h"
 #include "hermes/MailboxWorkflow.h"
 #include "hermes/SelectedTextUrlSettings.h"
+#include "HaikuHermesImports.h"
 
 class BListView;
 class BButton;

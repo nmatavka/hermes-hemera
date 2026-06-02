@@ -42,18 +42,36 @@ defmodule HemeraHaikuRollout.GitHubTest do
     assert GitHub.current_login({FakeExecutor, agent}) == "nick"
   end
 
-  test "renders a guided gh pr create command" do
+  test "renders a template-safe guided gh pr create command" do
     context = context("1.0")
     command = GitHub.pull_request_command(context)
 
     assert command =~ "gh pr create"
+    assert command =~ "--editor"
     assert command =~ "--repo 'haikuports/haikuports'"
     assert command =~ "--head 'nick:hemera-1.0'"
-    assert command =~ "--title 'hemera: add 1.0-1'"
+    refute command =~ "--title"
+    refute command =~ "--body"
+    refute command =~ "--body-file"
+    refute command =~ "--template"
+    refute command =~ "--fill"
   end
 
-  test "reuses and edits an existing pull request" do
-    context = context()
+  test "renders PR handoff markdown with suggested title, notes, and template warning" do
+    context = context("1.0")
+    command = GitHub.pull_request_command(context)
+    watch_command = "scripts/release_haiku_rollout.sh watch hemera-1.0"
+    handoff = GitHub.pull_request_handoff_markdown(context, command, watch_command)
+
+    assert handoff =~ "Suggested PR title:"
+    assert handoff =~ context.suggested_pr_title
+    assert handoff =~ context.pr_notes
+    assert handoff =~ GitHub.pull_request_template_warning()
+    assert handoff =~ watch_command
+  end
+
+  test "finds an existing pull request by branch and fork owner" do
+    context = context("1.0")
 
     {:ok, agent} =
       FakeExecutor.start_link([
@@ -68,90 +86,13 @@ defmodule HemeraHaikuRollout.GitHubTest do
             "--json",
             "number,url,headRefName,headRepositoryOwner"
           ],
-          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"#{context.haikuports_branch}","headRepositoryOwner":{"login":"nick"}}])},
-        %{program: "gh",
-          args: [
-            "pr",
-            "edit",
-            "17",
-            "--repo",
-            context.haikuports_repo_slug,
-            "--title",
-            context.pr_title,
-            "--body",
-            context.pr_body
-          ],
-          stdout: ""}
+          stdout:
+            ~s([{"number":11,"url":"https://example.test/pr/11","headRefName":"#{context.haikuports_branch}","headRepositoryOwner":{"login":"someone-else"}},{"number":17,"url":"https://example.test/pr/17","headRefName":"#{context.haikuports_branch}","headRepositoryOwner":{"login":"nick"}}])}
       ])
 
-    result = GitHub.ensure_pull_request!({FakeExecutor, agent}, context)
-    assert result.url == "https://example.test/pr/17"
-    assert result.number == 17
-  end
+    pr = GitHub.find_pull_request({FakeExecutor, agent}, context)
 
-  test "recovers when gh pr create reports an existing pull request" do
-    context = context()
-
-    {:ok, agent} =
-      FakeExecutor.start_link([
-        %{program: "gh",
-          args: [
-            "pr",
-            "list",
-            "--repo",
-            context.haikuports_repo_slug,
-            "--head",
-            context.haikuports_branch,
-            "--json",
-            "number,url,headRefName,headRepositoryOwner"
-          ],
-          stdout: "[]"},
-        %{program: "gh",
-          args: [
-            "pr",
-            "create",
-            "--repo",
-            context.haikuports_repo_slug,
-            "--base",
-            context.haikuports_target_branch,
-            "--head",
-            "#{context.haikuports_fork_owner}:#{context.haikuports_branch}",
-            "--title",
-            context.pr_title,
-            "--body",
-            context.pr_body
-          ],
-          status: 1,
-          stdout: "a pull request for branch \"#{context.haikuports_branch}\" already exists\n"},
-        %{program: "gh",
-          args: [
-            "pr",
-            "list",
-            "--repo",
-            context.haikuports_repo_slug,
-            "--head",
-            context.haikuports_branch,
-            "--json",
-            "number,url,headRefName,headRepositoryOwner"
-          ],
-          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"#{context.haikuports_branch}","headRepositoryOwner":{"login":"nick"}}])},
-        %{program: "gh",
-          args: [
-            "pr",
-            "edit",
-            "17",
-            "--repo",
-            context.haikuports_repo_slug,
-            "--title",
-            context.pr_title,
-            "--body",
-            context.pr_body
-          ],
-          stdout: ""}
-      ])
-
-    result = GitHub.ensure_pull_request!({FakeExecutor, agent}, context)
-    assert result.url == "https://example.test/pr/17"
-    assert result.number == 17
+    assert pr["number"] == 17
+    assert pr["url"] == "https://example.test/pr/17"
   end
 end

@@ -121,14 +121,25 @@ defmodule HemeraHaikuRollout.ReleaseTest do
 
     assert output =~ "Run this command to open the PR"
     assert output =~ "gh pr create"
+    assert output =~ "--editor"
+    assert output =~ "Suggested PR title:"
+    assert output =~ context.suggested_pr_title
+    assert output =~ "Optional rollout notes:"
+    assert output =~ context.pr_notes
+    assert output =~ context.pr_handoff_path
+    assert output =~ "HaikuPorts contributor checklist template appears in the editor"
     assert output =~ "scripts/release_haiku_rollout.sh watch #{context.haikuports_branch}"
+    assert File.exists?(context.pr_handoff_path)
+    assert File.read!(context.pr_handoff_path) =~ context.suggested_pr_title
+    assert File.read!(context.pr_handoff_path) =~ "gh pr create"
+    assert File.read!(context.pr_handoff_path) =~ "--editor"
 
     commands = FakeExecutor.commands(agent)
     refute Enum.any?(commands, &(&1.args |> Enum.take(2) == ["pr", "create"]))
     refute Enum.any?(commands, &(&1.args |> Enum.take(2) == ["pr", "checks"]))
   end
 
-  test "resume reuses completed release state and skips a redundant push when the remote already matches" do
+  test "resume reprints the template-safe PR handoff when the remote already matches and no PR exists yet" do
     workspace = WorkspaceFactory.workspace!()
     context = HemeraHaikuRollout.ReleaseContext.build(workspace, "1.0")
     File.rm_rf!(context.work_dir)
@@ -171,7 +182,7 @@ defmodule HemeraHaikuRollout.ReleaseTest do
             "--json",
             "number,url,headRefName,headRepositoryOwner"
           ],
-          stdout: ~s([{"number":17,"url":"https://example.test/pr/17","headRefName":"#{context.haikuports_branch}","headRepositoryOwner":{"login":"nick"}}])}
+          stdout: "[]"}
       ])
 
     output =
@@ -180,7 +191,12 @@ defmodule HemeraHaikuRollout.ReleaseTest do
       end)
 
     refute output =~ "error:"
-    assert output =~ "discovered existing PR: https://example.test/pr/17"
+    assert output =~ "Run this command to open the PR"
+    assert output =~ "--editor"
+    assert output =~ context.suggested_pr_title
+    assert output =~ context.pr_handoff_path
+    assert output =~ "HaikuPorts contributor checklist template appears in the editor"
+    assert File.exists?(context.pr_handoff_path)
 
     commands = FakeExecutor.commands(agent)
     refute Enum.any?(commands, &(&1.args |> Enum.take(2) == ["release", "view"]))
@@ -188,7 +204,6 @@ defmodule HemeraHaikuRollout.ReleaseTest do
     refute Enum.any?(commands, &(&1.args |> Enum.take(2) == ["release", "upload"]))
     refute Enum.any?(commands, &(&1.args |> Enum.take(2) == ["push", "--set-upstream"]))
     refute Enum.any?(commands, &(&1.args |> Enum.take(2) == ["pr", "create"]))
-    refute Enum.any?(commands, &(&1.args |> Enum.take(2) == ["pr", "edit"]))
     refute Enum.any?(commands, &(&1.args |> Enum.take(2) == ["pr", "checks"]))
   end
 
@@ -198,6 +213,7 @@ defmodule HemeraHaikuRollout.ReleaseTest do
     File.rm_rf!(context.work_dir)
     File.mkdir_p!(context.artifact_dir)
     File.write!(context.artifact_path, "tarball")
+    State.put_step!(context, :pr_discovered, %{status: "completed", pr_url: "https://example.test/pr/17"})
 
     {:ok, agent} =
       FakeExecutor.start_link([
@@ -277,5 +293,6 @@ defmodule HemeraHaikuRollout.ReleaseTest do
     assert branch_step["remote_sha"] == "remote789"
     assert branch_step["error"] =~ "already exists on origin"
     assert Enum.any?(branch_step["recovery_commands"], &String.contains?(&1, "push --force-with-lease origin hemera-1.0"))
+    assert State.step(State.load(context), :pr_discovered) == %{}
   end
 end

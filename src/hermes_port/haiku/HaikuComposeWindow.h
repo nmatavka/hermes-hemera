@@ -13,6 +13,7 @@
 #include "ComposeEditorHost.h"
 #include "hermes/ComposeMessage.h"
 #include "hermes/GuiPreferences.h"
+#include "HaikuHermesImports.h"
 
 class BListView;
 class BFilePanel;

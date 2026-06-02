@@ -174,10 +174,21 @@ defmodule HemeraHaikuRollout.Release do
 
       pr_command_step =
         run_resume_step!(context, mode, :pr_command_prepared, fn _step ->
+          pr_create_command = GitHub.pull_request_command(context)
+          watch_command = "scripts/release_haiku_rollout.sh watch #{context.haikuports_branch}"
+          handoff_markdown = GitHub.pull_request_handoff_markdown(context, pr_create_command, watch_command)
+          File.write!(context.pr_handoff_path, handoff_markdown)
+
           %{
-            pr_create_command: GitHub.pull_request_command(context),
-            watch_command: "scripts/release_haiku_rollout.sh watch #{context.haikuports_branch}"
+            pr_create_command: pr_create_command,
+            watch_command: watch_command,
+            suggested_pr_title: context.suggested_pr_title,
+            pr_notes: context.pr_notes,
+            handoff_path: context.pr_handoff_path,
+            template_warning: GitHub.pull_request_template_warning()
           }
+        end, fn step ->
+          File.exists?(step["handoff_path"] || context.pr_handoff_path)
         end)
 
       pr_step =
@@ -213,6 +224,10 @@ defmodule HemeraHaikuRollout.Release do
     if mode == :resume and State.completed?(state, step) and present?.(existing) do
       existing
     else
+      if invalidates_downstream_steps?(step) do
+        State.drop_steps_after!(context, step, @ordered_steps)
+      end
+
       run_step!(context, step, fn -> fun.(existing) end)
     end
   end
@@ -331,6 +346,10 @@ defmodule HemeraHaikuRollout.Release do
     ]
   end
 
+  defp invalidates_downstream_steps?(step) do
+    step not in [:repo_version_validated, :haiku_preflight]
+  end
+
   defp print_pr_handoff(pr_command_step, pr_step) do
     case pr_step["status"] do
       "completed" ->
@@ -342,6 +361,17 @@ defmodule HemeraHaikuRollout.Release do
         IO.puts("HaikuPorts branch pushed. Run this command to open the PR:")
         IO.puts("")
         IO.puts(pr_command_step["pr_create_command"])
+        IO.puts("")
+        IO.puts("Suggested PR title:")
+        IO.puts(pr_command_step["suggested_pr_title"])
+        IO.puts("")
+        IO.puts("Optional rollout notes:")
+        IO.puts(pr_command_step["pr_notes"])
+        IO.puts("")
+        IO.puts("Handoff notes written to:")
+        IO.puts(pr_command_step["handoff_path"])
+        IO.puts("")
+        IO.puts(pr_command_step["template_warning"])
         IO.puts("")
         IO.puts("After the PR exists, watch it with:")
         IO.puts(pr_command_step["watch_command"])

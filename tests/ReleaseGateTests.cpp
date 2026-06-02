@@ -211,6 +211,8 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     HERMES_CHECK(release_manifest_contents.find("version: \"1.0\"") != std::string::npos);
     HERMES_CHECK(release_manifest_contents.find("branch_template: \"hemera-<haikuports_version>\"") !=
                  std::string::npos);
+    HERMES_CHECK(release_manifest_contents.find("pr_notes_template:") != std::string::npos);
+    HERMES_CHECK(release_manifest_contents.find("pr_body_template:") == std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("Hemera") != std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("application/x-vnd.hermes-hemera") !=
                  std::string::npos);
@@ -220,6 +222,10 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     HERMES_CHECK(packaging_readme_contents.find("guided `gh pr create` handoff") !=
                  std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("managed fork branch has diverged remotely") !=
+                 std::string::npos);
+    HERMES_CHECK(packaging_readme_contents.find("does not inject PR body text") !=
+                 std::string::npos);
+    HERMES_CHECK(packaging_readme_contents.find("contributor checklist template") !=
                  std::string::npos);
     HERMES_CHECK(packaging_readme_contents.find("scripts/release_haiku_rollout.sh") !=
                  std::string::npos);
@@ -240,6 +246,8 @@ HERMES_TEST(TrackedHaikuReleaseScaffoldingExistsForHemeraRc) {
     HERMES_CHECK(rollout_readme_contents.find("state.json") != std::string::npos);
     HERMES_CHECK(rollout_readme_contents.find("exact `gh pr create` handoff command") !=
                  std::string::npos);
+    HERMES_CHECK(rollout_readme_contents.find("--editor") != std::string::npos);
+    HERMES_CHECK(rollout_readme_contents.find("does not inject PR body text") != std::string::npos);
     HERMES_CHECK(rollout_readme_contents.find("stops before push") != std::string::npos);
     HERMES_CHECK(rollout_mix_contents.find("app: :hemera_haiku_rollout") != std::string::npos);
     HERMES_CHECK(rollout_launcher_contents.find("tools/haiku_rollout") != std::string::npos);

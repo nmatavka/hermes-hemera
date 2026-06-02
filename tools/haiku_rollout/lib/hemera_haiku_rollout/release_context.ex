@@ -23,8 +23,9 @@ defmodule HemeraHaikuRollout.ReleaseContext do
     :rendered_recipe_path,
     :port_template_dir,
     :haikuports_branch,
-    :pr_title,
-    :pr_body,
+    :suggested_pr_title,
+    :pr_notes,
+    :pr_handoff_path,
     :haikuports_port_path,
     :haikuports_checkout_path,
     :haikuports_upstream_url,
@@ -88,8 +89,9 @@ defmodule HemeraHaikuRollout.ReleaseContext do
       rendered_recipe_path: Path.join(work_dir, Versioning.recipe_filename(version)),
       port_template_dir: HemeraHaikuRollout.Workspace.recipe_template_dir(workspace),
       haikuports_branch: haikuports_branch,
-      pr_title: Util.render_template(manifest.haikuports_pr_title_template, replacements),
-      pr_body: "",
+      suggested_pr_title: Util.render_template(manifest.haikuports_pr_title_template, replacements),
+      pr_notes: "",
+      pr_handoff_path: Path.join(work_dir, "pr_handoff.md"),
       haikuports_port_path: manifest.haikuports_port_path,
       haikuports_checkout_path: manifest.haikuports_checkout_path,
       haikuports_upstream_url: manifest.haikuports_upstream_url,
@@ -101,11 +103,11 @@ defmodule HemeraHaikuRollout.ReleaseContext do
       app_name: manifest.app_name
     }
 
-    %{context | pr_body: pr_body(context)}
+    %{context | pr_notes: pr_notes(context)}
   end
 
-  def pr_body(context) do
-    Util.render_template(context.workspace.manifest.haikuports_pr_body_template, %{
+  def pr_notes(context) do
+    Util.render_template(context.workspace.manifest.haikuports_pr_notes_template, %{
       "app_name" => context.app_name,
       "version" => context.version,
       "haikuports_version" => context.haikuports_version,

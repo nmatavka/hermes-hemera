@@ -12,6 +12,8 @@ defmodule HemeraHaikuRollout.Status do
     last_failed = State.last_failed_step(state, Release.step_order())
     next_pending = State.next_pending_step(state, Release.step_order())
     branch_step = State.step(state, :branch_pushed)
+    pr_step = State.step(state, :pr_discovered)
+    pr_command_step = State.step(state, :pr_command_prepared)
 
     IO.puts("Repo root: #{workspace.root}")
     IO.puts("Manifest: #{workspace.manifest_path}")
@@ -32,12 +34,13 @@ defmodule HemeraHaikuRollout.Status do
         Enum.each(missing, fn line -> IO.puts("  - #{line}") end)
     end
 
-    if pr_step = discovered_pr_step(state) do
-      if pr_url = pr_step["pr_url"] do
+    if discovered_step = discovered_pr_step(state) do
+      if pr_url = discovered_step["pr_url"] do
         IO.puts("PR: #{pr_url}")
       end
     end
 
+    print_pr_handoff_state(pr_step, pr_command_step)
     print_branch_state(branch_step)
     IO.puts("Last completed step: #{format_step(last_completed)}")
     IO.puts("Last failed step: #{format_step(last_failed)}")
@@ -52,12 +55,16 @@ defmodule HemeraHaikuRollout.Status do
   end
 
   defp discovered_pr_step(state) do
-    step = State.step(state, :pr_discovered)
-
-    if step == %{} do
+    if State.step(state, :branch_pushed)["status"] == "failed" do
       nil
     else
-      step
+      step = State.step(state, :pr_discovered)
+
+      if step == %{} do
+        nil
+      else
+        step
+      end
     end
   end
 
@@ -120,6 +127,22 @@ defmodule HemeraHaikuRollout.Status do
   end
 
   defp print_branch_state(_other), do: :ok
+
+  defp print_pr_handoff_state(pr_step, pr_command_step) do
+    if pr_step["status"] != "completed" and pr_command_step["status"] == "completed" do
+      if suggested_pr_title = pr_command_step["suggested_pr_title"] do
+        IO.puts("Suggested PR title: #{suggested_pr_title}")
+      end
+
+      if handoff_path = pr_command_step["handoff_path"] do
+        IO.puts("PR handoff file: #{handoff_path}")
+      end
+
+      if template_warning = pr_command_step["template_warning"] do
+        IO.puts("PR handoff warning: #{template_warning}")
+      end
+    end
+  end
 
   defp format_step(nil), do: "(none)"
   defp format_step({_step, label}), do: label

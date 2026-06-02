@@ -24,7 +24,14 @@ defmodule HemeraHaikuRollout.StatusTest do
     version = "1.0"
     context = ReleaseContext.build(workspace, version)
     File.rm_rf!(context.work_dir)
-    State.put_step!(context, :pr_command_prepared, %{status: "completed", pr_create_command: "gh pr create --repo demo", watch_command: "scripts/release_haiku_rollout.sh watch hemera-1.0"})
+    State.put_step!(context, :pr_command_prepared, %{
+      status: "completed",
+      pr_create_command: "gh pr create --editor --repo demo",
+      watch_command: "scripts/release_haiku_rollout.sh watch hemera-1.0",
+      suggested_pr_title: "hemera: add 1.0-1",
+      handoff_path: "/tmp/pr_handoff.md",
+      template_warning: "Confirm the HaikuPorts contributor checklist template appears in the editor."
+    })
 
     {:ok, agent} = FakeExecutor.start_link([%{program: "gh", args: ["api", "user"], stdout: ~s({"login":"nick"})}])
 
@@ -35,8 +42,11 @@ defmodule HemeraHaikuRollout.StatusTest do
 
     assert output =~ "Missing local keys:"
     assert output =~ "haikuports.fork_url"
+    assert output =~ "Suggested PR title: hemera: add 1.0-1"
+    assert output =~ "PR handoff file: /tmp/pr_handoff.md"
+    assert output =~ "PR handoff warning: Confirm the HaikuPorts contributor checklist template appears in the editor."
     assert output =~ "Next command:"
-    assert output =~ "gh pr create --repo demo"
+    assert output =~ "gh pr create --editor --repo demo"
   end
 
   test "status reports workspace paths, PR URL, and watch command once a PR exists" do
@@ -85,6 +95,7 @@ defmodule HemeraHaikuRollout.StatusTest do
         "git -C '/tmp/haikuports' push origin :hemera-1.0"
       ]
     })
+    State.put_step!(context, :pr_discovered, %{status: "completed", pr_url: "https://example.test/pr/17"})
 
     {:ok, agent} =
       FakeExecutor.start_link([
@@ -104,5 +115,6 @@ defmodule HemeraHaikuRollout.StatusTest do
     assert output =~ "Branch push safety: blocked by remote divergence"
     assert output =~ "Last failed step: branch pushed"
     assert output =~ "git -C '/tmp/haikuports' push origin :hemera-1.0"
+    refute output =~ "PR: https://example.test/pr/17"
   end
 end

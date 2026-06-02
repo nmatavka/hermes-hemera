@@ -22,6 +22,29 @@ defmodule HemeraHaikuRollout.State do
     updated
   end
 
+  def drop_steps_after!(context, step, ordered_steps) do
+    state = load(context)
+    step_names = Enum.map(ordered_steps, fn {ordered_step, _label} -> Atom.to_string(ordered_step) end)
+    current_name = Atom.to_string(step)
+
+    updated_steps =
+      case Enum.split_while(step_names, &(&1 != current_name)) do
+        {_before, []} ->
+          state["steps"]
+
+        {_before, [_current | trailing_steps]} ->
+          Map.drop(state["steps"], trailing_steps)
+      end
+
+    updated =
+      state
+      |> Map.put("steps", updated_steps)
+      |> Map.put("updated_at", Util.timestamp_utc())
+
+    write!(context, updated)
+    updated
+  end
+
   def step(state, step) when is_atom(step), do: step(state, Atom.to_string(step))
 
   def step(state, step) when is_binary(step) do

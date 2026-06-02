@@ -65,7 +65,7 @@ defmodule HemeraHaikuRollout.HaikuPorts do
       Executor.run!(
         executor,
         "git",
-        ["commit", "-m", context.pr_title],
+        ["commit", "-m", context.suggested_pr_title],
         cwd: checkout
       )
       :committed

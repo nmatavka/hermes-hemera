@@ -39,6 +39,7 @@
 #include "hermes/ShellBehaviorSettings.h"
 #include "hermes/SearchService.h"
 #include "hermes/StationeryStore.h"
+#include "HaikuHermesImports.h"
 
 namespace hemera::haiku {
 
